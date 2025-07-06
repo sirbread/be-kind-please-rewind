@@ -35,7 +35,7 @@ def get_documents_dir():
     else:
         return os.path.join(os.path.expanduser("~"), "Documents")
 
-SNAPSHOTS_BASE = os.path.join(get_documents_dir(), "Rewind", "snapshots")
+SNAPSHOTS_BASE = os.path.join(get_documents_dir(), "be-kind-please-rewind", "snapshots")
 os.makedirs(SNAPSHOTS_BASE, exist_ok=True)
 
 DARK_STYLESHEET = """
