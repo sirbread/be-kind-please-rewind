@@ -3,13 +3,14 @@ import os
 import shutil
 import difflib
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QListWidget, QFileDialog, QSplitter,
-    QListWidgetItem, QLabel, QTextBrowser, QComboBox, QMessageBox
+    QListWidgetItem, QLabel, QTextBrowser, QComboBox, QMessageBox,
+    QDialog, QCheckBox, QSpinBox, QTextEdit, QFormLayout, QDialogButtonBox
 )
 from PyQt5.QtCore import Qt, QTimer, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap
@@ -207,6 +208,323 @@ class WatcherThread(QThread):
     def stop(self):
         self.requestInterruption()
 
+class SnapshotManagementDialog(QDialog):
+    def __init__(self, parent, file_path):
+        super().__init__(parent)
+        self.file_path = file_path
+        self.setWindowTitle(f"Manage Snapshots - {os.path.basename(file_path)}")
+        self.setModal(True)
+        self.setMinimumWidth(600)
+        self.setMinimumHeight(400)
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Show file info
+        file_info = QLabel(f"File: {self.file_path}")
+        file_info.setStyleSheet("font-weight: bold; margin-bottom: 10px;")
+        layout.addWidget(file_info)
+        
+        # Snapshot list
+        layout.addWidget(QLabel("Snapshots:"))
+        self.snapshots_list = QListWidget()
+        self.snapshots_list.itemSelectionChanged.connect(self.on_snapshot_selection_changed)
+        layout.addWidget(self.snapshots_list)
+        
+        # Snapshot management buttons
+        management_layout = QHBoxLayout()
+        
+        self.delete_selected_btn = QPushButton("Delete Selected")
+        self.delete_selected_btn.clicked.connect(self.delete_selected_snapshots)
+        self.delete_selected_btn.setEnabled(False)
+        management_layout.addWidget(self.delete_selected_btn)
+        
+        self.delete_old_btn = QPushButton("Delete Old...")
+        self.delete_old_btn.clicked.connect(self.delete_old_snapshots)
+        management_layout.addWidget(self.delete_old_btn)
+        
+        self.export_btn = QPushButton("Export...")
+        self.export_btn.clicked.connect(self.export_snapshots)
+        management_layout.addWidget(self.export_btn)
+        
+        self.import_btn = QPushButton("Import...")
+        self.import_btn.clicked.connect(self.import_snapshots)
+        management_layout.addWidget(self.import_btn)
+        
+        layout.addLayout(management_layout)
+        
+        # Add notes section
+        layout.addWidget(QLabel("Notes for selected snapshot:"))
+        self.notes_edit = QTextEdit()
+        self.notes_edit.setMaximumHeight(100)
+        self.notes_edit.textChanged.connect(self.on_notes_changed)
+        layout.addWidget(self.notes_edit)
+        
+        # Dialog buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+        
+        # Load snapshots
+        self.load_snapshots()
+
+    def load_snapshots(self):
+        self.snapshots_list.clear()
+        snapshots = list_snapshots(self.file_path)
+        
+        for snapshot_path in snapshots:
+            filename = os.path.basename(snapshot_path)
+            display_text = format_snap_time(filename)
+            
+            # Check if there's a note for this snapshot
+            note = self.get_snapshot_note(snapshot_path)
+            if note:
+                display_text += f" - {note[:50]}{'...' if len(note) > 50 else ''}"
+            
+            item = QListWidgetItem(display_text)
+            item.setToolTip(snapshot_path)
+            item.setData(Qt.UserRole, snapshot_path)
+            self.snapshots_list.addItem(item)
+
+    def on_snapshot_selection_changed(self):
+        current_item = self.snapshots_list.currentItem()
+        self.delete_selected_btn.setEnabled(current_item is not None)
+        
+        if current_item:
+            snapshot_path = current_item.data(Qt.UserRole)
+            note = self.get_snapshot_note(snapshot_path)
+            self.notes_edit.setText(note)
+        else:
+            self.notes_edit.clear()
+
+    def on_notes_changed(self):
+        current_item = self.snapshots_list.currentItem()
+        if current_item:
+            snapshot_path = current_item.data(Qt.UserRole)
+            note = self.notes_edit.toPlainText()
+            self.save_snapshot_note(snapshot_path, note)
+
+    def get_snapshot_note(self, snapshot_path):
+        """Get the note for a snapshot"""
+        note_file = snapshot_path + ".note"
+        if os.path.exists(note_file):
+            try:
+                with open(note_file, 'r', encoding='utf-8') as f:
+                    return f.read().strip()
+            except Exception:
+                pass
+        return ""
+
+    def save_snapshot_note(self, snapshot_path, note):
+        """Save a note for a snapshot"""
+        note_file = snapshot_path + ".note"
+        try:
+            if note.strip():
+                with open(note_file, 'w', encoding='utf-8') as f:
+                    f.write(note)
+            else:
+                # Remove empty note file
+                if os.path.exists(note_file):
+                    os.remove(note_file)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not save note: {e}")
+
+    def delete_selected_snapshots(self):
+        selected_items = self.snapshots_list.selectedItems()
+        if not selected_items:
+            return
+        
+        reply = QMessageBox.question(
+            self, 
+            "Delete Snapshots", 
+            f"Are you sure you want to delete {len(selected_items)} selected snapshot(s)?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            for item in selected_items:
+                snapshot_path = item.data(Qt.UserRole)
+                try:
+                    os.remove(snapshot_path)
+                    # Also remove note file if it exists
+                    note_file = snapshot_path + ".note"
+                    if os.path.exists(note_file):
+                        os.remove(note_file)
+                except Exception as e:
+                    QMessageBox.warning(self, "Error", f"Could not delete {snapshot_path}: {e}")
+            
+            self.load_snapshots()
+
+    def delete_old_snapshots(self):
+        """Show dialog to delete old snapshots based on criteria"""
+        dialog = DeleteOldSnapshotsDialog(self, self.file_path)
+        if dialog.exec_() == QDialog.Accepted:
+            self.load_snapshots()
+
+    def export_snapshots(self):
+        """Export snapshots to a zip file"""
+        export_path, _ = QFileDialog.getSaveFileName(
+            self, 
+            "Export Snapshots", 
+            f"{os.path.basename(self.file_path)}_snapshots.zip",
+            "Zip files (*.zip)"
+        )
+        
+        if export_path:
+            try:
+                import zipfile
+                snapshots = list_snapshots(self.file_path)
+                
+                with zipfile.ZipFile(export_path, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                    for snapshot_path in snapshots:
+                        # Add the snapshot file
+                        zip_file.write(snapshot_path, os.path.basename(snapshot_path))
+                        
+                        # Add the note file if it exists
+                        note_file = snapshot_path + ".note"
+                        if os.path.exists(note_file):
+                            zip_file.write(note_file, os.path.basename(note_file))
+                
+                QMessageBox.information(self, "Success", f"Snapshots exported to {export_path}")
+                
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not export snapshots: {e}")
+
+    def import_snapshots(self):
+        """Import snapshots from a zip file"""
+        import_path, _ = QFileDialog.getOpenFileName(
+            self, 
+            "Import Snapshots", 
+            "",
+            "Zip files (*.zip)"
+        )
+        
+        if import_path:
+            try:
+                import zipfile
+                snapdir = get_snapshot_dir(self.file_path)
+                
+                with zipfile.ZipFile(import_path, 'r') as zip_file:
+                    zip_file.extractall(snapdir)
+                
+                self.load_snapshots()
+                QMessageBox.information(self, "Success", "Snapshots imported successfully")
+                
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Could not import snapshots: {e}")
+
+class DeleteOldSnapshotsDialog(QDialog):
+    def __init__(self, parent, file_path):
+        super().__init__(parent)
+        self.file_path = file_path
+        self.setWindowTitle("Delete Old Snapshots")
+        self.setModal(True)
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QFormLayout(self)
+        
+        # Options for deleting old snapshots
+        self.keep_last_cb = QCheckBox("Keep only the last N snapshots")
+        self.keep_last_sb = QSpinBox()
+        self.keep_last_sb.setMinimum(1)
+        self.keep_last_sb.setMaximum(1000)
+        self.keep_last_sb.setValue(10)
+        self.keep_last_sb.setEnabled(False)
+        
+        self.keep_last_cb.toggled.connect(self.keep_last_sb.setEnabled)
+        
+        keep_last_layout = QHBoxLayout()
+        keep_last_layout.addWidget(self.keep_last_cb)
+        keep_last_layout.addWidget(self.keep_last_sb)
+        keep_last_layout.addStretch()
+        
+        layout.addRow(keep_last_layout)
+        
+        self.older_than_cb = QCheckBox("Delete snapshots older than N days")
+        self.older_than_sb = QSpinBox()
+        self.older_than_sb.setMinimum(1)
+        self.older_than_sb.setMaximum(365)
+        self.older_than_sb.setValue(30)
+        self.older_than_sb.setEnabled(False)
+        
+        self.older_than_cb.toggled.connect(self.older_than_sb.setEnabled)
+        
+        older_than_layout = QHBoxLayout()
+        older_than_layout.addWidget(self.older_than_cb)
+        older_than_layout.addWidget(self.older_than_sb)
+        older_than_layout.addStretch()
+        
+        layout.addRow(older_than_layout)
+        
+        # Buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.delete_old_snapshots)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def delete_old_snapshots(self):
+        snapshots = list_snapshots(self.file_path)
+        if not snapshots:
+            self.accept()
+            return
+        
+        to_delete = []
+        
+        if self.keep_last_cb.isChecked():
+            keep_count = self.keep_last_sb.value()
+            if len(snapshots) > keep_count:
+                to_delete.extend(snapshots[keep_count:])
+        
+        if self.older_than_cb.isChecked():
+            days = self.older_than_sb.value()
+            cutoff_date = datetime.now() - timedelta(days=days)
+            
+            for snapshot_path in snapshots:
+                try:
+                    # Try to get date from filename first
+                    filename = os.path.basename(snapshot_path)
+                    m = re.search(r'_(\d{8}_\d{6}_\d{6})', filename)
+                    if m:
+                        snapshot_date = datetime.strptime(m.group(1), "%Y%m%d_%H%M%S_%f")
+                    else:
+                        # Fall back to file modification time
+                        snapshot_date = datetime.fromtimestamp(os.path.getmtime(snapshot_path))
+                    
+                    if snapshot_date < cutoff_date and snapshot_path not in to_delete:
+                        to_delete.append(snapshot_path)
+                except Exception:
+                    pass
+        
+        if to_delete:
+            reply = QMessageBox.question(
+                self, 
+                "Confirm Deletion", 
+                f"Delete {len(to_delete)} old snapshot(s)?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                for snapshot_path in to_delete:
+                    try:
+                        os.remove(snapshot_path)
+                        # Also remove note file if it exists
+                        note_file = snapshot_path + ".note"
+                        if os.path.exists(note_file):
+                            os.remove(note_file)
+                    except Exception as e:
+                        QMessageBox.warning(self, "Error", f"Could not delete {snapshot_path}: {e}")
+                
+                QMessageBox.information(self, "Success", f"Deleted {len(to_delete)} old snapshots")
+        else:
+            QMessageBox.information(self, "Info", "No snapshots to delete based on the criteria")
+        
+        self.accept()
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -227,10 +545,18 @@ class MainWindow(QMainWindow):
         top = QHBoxLayout()
         self.add_btn = QPushButton("+ add file to track")
         self.add_btn.clicked.connect(self.add_file)
+        self.remove_btn = QPushButton("- remove file")
+        self.remove_btn.clicked.connect(self.remove_file)
+        self.remove_btn.setEnabled(False)
+        self.manage_snapshots_btn = QPushButton("manage snapshots")
+        self.manage_snapshots_btn.clicked.connect(self.manage_snapshots)
+        self.manage_snapshots_btn.setEnabled(False)
         self.freq_combo = QComboBox()
         self.freq_combo.addItems(["On Change", "Every 30 Seconds", "Every 1 Minute", "Every 5 Minutes"])
         self.freq_combo.currentTextChanged.connect(self.update_monitoring)
         top.addWidget(self.add_btn)
+        top.addWidget(self.remove_btn)
+        top.addWidget(self.manage_snapshots_btn)
         top.addStretch()
         top.addWidget(QLabel("tracking frequency:"))
         top.addWidget(self.freq_combo)
@@ -241,6 +567,7 @@ class MainWindow(QMainWindow):
         files_layout.addWidget(QLabel("tracked files", objectName="header"))
         self.files_list = QListWidget()
         self.files_list.itemClicked.connect(self.show_versions)
+        self.files_list.itemSelectionChanged.connect(self.on_file_selection_changed)
         files_layout.addWidget(self.files_list)
 
         versions_panel = QWidget()
@@ -287,6 +614,74 @@ class MainWindow(QMainWindow):
             item.setData(Qt.UserRole, file_path)
             self.files_list.addItem(item)
             self.update_monitoring()
+
+    def on_file_selection_changed(self):
+        current_item = self.files_list.currentItem()
+        has_selection = current_item is not None
+        self.remove_btn.setEnabled(has_selection)
+        self.manage_snapshots_btn.setEnabled(has_selection)
+
+    def remove_file(self):
+        current_item = self.files_list.currentItem()
+        if not current_item:
+            return
+        
+        file_path = current_item.data(Qt.UserRole)
+        
+        # Ask user if they want to delete snapshots too
+        reply = QMessageBox.question(
+            self, 
+            "Remove File", 
+            f"Remove '{os.path.basename(file_path)}' from tracking?\n\nDo you also want to delete all snapshots for this file?",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.Cancel
+        )
+        
+        if reply == QMessageBox.Cancel:
+            return
+        
+        # Remove from tracking
+        if file_path in self.tracked:
+            del self.tracked[file_path]
+        
+        # Remove from UI
+        row = self.files_list.row(current_item)
+        self.files_list.takeItem(row)
+        
+        # Delete snapshots if requested
+        if reply == QMessageBox.Yes:
+            self.delete_all_snapshots(file_path)
+        
+        # Clear versions and preview
+        self.versions_list.clear()
+        self.preview_box.clear()
+        self.restore_btn.setEnabled(False)
+        
+        # Update monitoring
+        self.update_monitoring()
+        
+        QMessageBox.information(self, "Success", "File removed from tracking.")
+
+    def delete_all_snapshots(self, file_path):
+        """Delete all snapshots for a given file"""
+        try:
+            snapdir = get_snapshot_dir(file_path)
+            if os.path.exists(snapdir):
+                shutil.rmtree(snapdir)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not delete snapshots: {e}")
+
+    def manage_snapshots(self):
+        current_item = self.files_list.currentItem()
+        if not current_item:
+            return
+        
+        file_path = current_item.data(Qt.UserRole)
+        dialog = SnapshotManagementDialog(self, file_path)
+        if dialog.exec_() == QDialog.Accepted:
+            # Refresh the versions list if it's currently showing this file
+            if current_item == self.files_list.currentItem():
+                self.show_versions(current_item)
 
     def update_monitoring(self):
         if self.watcher_thread: self.watcher_thread.stop(); self.watcher_thread = None
