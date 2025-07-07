@@ -5,11 +5,16 @@ import difflib
 import hashlib
 from datetime import datetime
 import re
+import json
+import zipfile
+import tempfile
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QListWidget, QFileDialog, QSplitter,
-    QListWidgetItem, QLabel, QTextBrowser, QComboBox, QMessageBox
+    QListWidgetItem, QLabel, QTextBrowser, QComboBox, QMessageBox,
+    QMenu, QAction, QInputDialog, QSpinBox, QCheckBox, QDialog,
+    QDialogButtonBox, QTextEdit
 )
 from PyQt5.QtCore import Qt, QTimer, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap
@@ -90,18 +95,24 @@ def make_snapshot_name(orig_name):
     base, ext = os.path.splitext(orig_name)
     return f"{base}_{current_timestamp()}{ext}"
 
-def save_snapshot(file_path):
+def save_snapshot(file_path, label=None, notes=None):
     if not os.path.exists(file_path): return None
     snapdir = get_snapshot_dir(file_path)
     dest = os.path.join(snapdir, make_snapshot_name(os.path.basename(file_path)))
     shutil.copy2(file_path, dest)
+    
+    # Save metadata
+    save_snapshot_metadata(dest, label, notes)
+    
     return dest
 
 def list_snapshots(file_path):
     snapdir = get_snapshot_dir(file_path)
     if not os.path.exists(snapdir):
         return []
-    files = [os.path.join(snapdir, f) for f in os.listdir(snapdir)]
+    all_files = [os.path.join(snapdir, f) for f in os.listdir(snapdir)]
+    # Filter out metadata files
+    files = [f for f in all_files if not f.endswith('.meta.json')]
     def snapkey(f):
         m = re.search(r'_(\d{8}_\d{6}_\d{6})', os.path.basename(f))
         if m:
@@ -173,6 +184,276 @@ def get_latest_snapshot(file_path):
     snaps = list_snapshots(file_path)
     return snaps[0] if snaps else None
 
+def get_snapshot_metadata_path(snapshot_path):
+    """Get the metadata file path for a snapshot."""
+    return snapshot_path + ".meta.json"
+
+def save_snapshot_metadata(snapshot_path, label=None, notes=None):
+    """Save metadata for a snapshot."""
+    metadata = {
+        "created": datetime.now().isoformat(),
+        "label": label or "",
+        "notes": notes or ""
+    }
+    meta_path = get_snapshot_metadata_path(snapshot_path)
+    with open(meta_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+
+def load_snapshot_metadata(snapshot_path):
+    """Load metadata for a snapshot."""
+    meta_path = get_snapshot_metadata_path(snapshot_path)
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, 'r') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"created": "", "label": "", "notes": ""}
+
+def update_snapshot_metadata(snapshot_path, label=None, notes=None):
+    """Update metadata for an existing snapshot."""
+    metadata = load_snapshot_metadata(snapshot_path)
+    if label is not None:
+        metadata["label"] = label
+    if notes is not None:
+        metadata["notes"] = notes
+    meta_path = get_snapshot_metadata_path(snapshot_path)
+    with open(meta_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+
+def delete_snapshot(snapshot_path):
+    """Delete a snapshot and its metadata."""
+    try:
+        if os.path.exists(snapshot_path):
+            os.remove(snapshot_path)
+        meta_path = get_snapshot_metadata_path(snapshot_path)
+        if os.path.exists(meta_path):
+            os.remove(meta_path)
+        return True
+    except Exception:
+        return False
+
+def delete_old_snapshots(file_path, keep_count=10):
+    """Delete old snapshots, keeping only the specified number."""
+    snapshots = list_snapshots(file_path)
+    if len(snapshots) <= keep_count:
+        return 0
+    
+    to_delete = snapshots[keep_count:]
+    deleted_count = 0
+    for snapshot in to_delete:
+        if delete_snapshot(snapshot):
+            deleted_count += 1
+    return deleted_count
+
+def export_snapshots(file_path, export_path):
+    """Export all snapshots for a file to a zip archive."""
+    try:
+        snapshots = list_snapshots(file_path)
+        if not snapshots:
+            return False
+        
+        with zipfile.ZipFile(export_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # Add original file info
+            info = {
+                "original_file": file_path,
+                "export_date": datetime.now().isoformat(),
+                "file_hash": hash_file_path(file_path)
+            }
+            zf.writestr("export_info.json", json.dumps(info, indent=2))
+            
+            # Add snapshots and metadata
+            for snapshot in snapshots:
+                snapshot_name = os.path.basename(snapshot)
+                zf.write(snapshot, f"snapshots/{snapshot_name}")
+                
+                # Add metadata if exists
+                meta_path = get_snapshot_metadata_path(snapshot)
+                if os.path.exists(meta_path):
+                    zf.write(meta_path, f"snapshots/{snapshot_name}.meta.json")
+        
+        return True
+    except Exception:
+        return False
+
+def import_snapshots(file_path, import_path):
+    """Import snapshots from a zip archive."""
+    try:
+        with zipfile.ZipFile(import_path, 'r') as zf:
+            # Verify it's a valid export
+            if "export_info.json" not in zf.namelist():
+                return False
+            
+            snap_dir = get_snapshot_dir(file_path)
+            
+            # Extract snapshots
+            for item in zf.namelist():
+                if item.startswith("snapshots/") and item != "snapshots/":
+                    zf.extract(item, snap_dir)
+                    # Move from snapshots/ subdirectory to snap_dir
+                    extracted_path = os.path.join(snap_dir, item)
+                    final_path = os.path.join(snap_dir, os.path.basename(item))
+                    if extracted_path != final_path:
+                        shutil.move(extracted_path, final_path)
+            
+            # Clean up empty snapshots directory
+            snapshots_subdir = os.path.join(snap_dir, "snapshots")
+            if os.path.exists(snapshots_subdir) and not os.listdir(snapshots_subdir):
+                os.rmdir(snapshots_subdir)
+        
+        return True
+    except Exception:
+        return False
+
+class SnapshotMetadataDialog(QDialog):
+    """Dialog for editing snapshot metadata."""
+    def __init__(self, parent=None, snapshot_path=None):
+        super().__init__(parent)
+        self.snapshot_path = snapshot_path
+        self.setWindowTitle("Edit Snapshot Metadata")
+        self.setModal(True)
+        self.resize(400, 300)
+        
+        layout = QVBoxLayout(self)
+        
+        # Label
+        layout.addWidget(QLabel("Label:"))
+        self.label_edit = QInputDialog()
+        self.label_input = QInputDialog.getText(self, "", "")[1]  # Get the QLineEdit
+        self.label_edit = QInputDialog()
+        
+        # Create our own input fields
+        self.label_field = QInputDialog()
+        
+        # Simpler approach - just use text inputs
+        layout.addWidget(QLabel("Label:"))
+        from PyQt5.QtWidgets import QLineEdit
+        self.label_edit = QLineEdit()
+        layout.addWidget(self.label_edit)
+        
+        layout.addWidget(QLabel("Notes:"))
+        self.notes_edit = QTextEdit()
+        layout.addWidget(self.notes_edit)
+        
+        # Load existing metadata
+        if snapshot_path:
+            metadata = load_snapshot_metadata(snapshot_path)
+            self.label_edit.setText(metadata.get("label", ""))
+            self.notes_edit.setText(metadata.get("notes", ""))
+        
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+    
+    def get_metadata(self):
+        return {
+            "label": self.label_edit.text(),
+            "notes": self.notes_edit.toPlainText()
+        }
+
+class SnapshotManagementDialog(QDialog):
+    """Dialog for managing snapshots (delete old ones, import/export)."""
+    def __init__(self, parent=None, file_path=None):
+        super().__init__(parent)
+        self.file_path = file_path
+        self.setWindowTitle("Manage Snapshots")
+        self.setModal(True)
+        self.resize(400, 200)
+        
+        layout = QVBoxLayout(self)
+        
+        # Delete old snapshots
+        delete_layout = QHBoxLayout()
+        delete_layout.addWidget(QLabel("Keep last"))
+        self.keep_count = QSpinBox()
+        self.keep_count.setMinimum(1)
+        self.keep_count.setMaximum(100)
+        self.keep_count.setValue(10)
+        delete_layout.addWidget(self.keep_count)
+        delete_layout.addWidget(QLabel("snapshots"))
+        delete_layout.addStretch()
+        
+        self.delete_btn = QPushButton("Delete Old Snapshots")
+        self.delete_btn.clicked.connect(self.delete_old_snapshots)
+        delete_layout.addWidget(self.delete_btn)
+        
+        layout.addLayout(delete_layout)
+        
+        # Import/Export
+        io_layout = QHBoxLayout()
+        self.export_btn = QPushButton("Export Snapshots")
+        self.export_btn.clicked.connect(self.export_snapshots)
+        io_layout.addWidget(self.export_btn)
+        
+        self.import_btn = QPushButton("Import Snapshots")
+        self.import_btn.clicked.connect(self.import_snapshots)
+        io_layout.addWidget(self.import_btn)
+        
+        layout.addLayout(io_layout)
+        
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+        
+        # Update snapshot count
+        self.update_info()
+    
+    def update_info(self):
+        if self.file_path:
+            snapshots = list_snapshots(self.file_path)
+            count = len(snapshots)
+            self.setWindowTitle(f"Manage Snapshots ({count} total)")
+    
+    def delete_old_snapshots(self):
+        if not self.file_path:
+            return
+        
+        keep_count = self.keep_count.value()
+        deleted = delete_old_snapshots(self.file_path, keep_count)
+        
+        if deleted > 0:
+            QMessageBox.information(self, "Success", f"Deleted {deleted} old snapshots.")
+            self.update_info()
+        else:
+            QMessageBox.information(self, "No Action", "No snapshots were deleted.")
+    
+    def export_snapshots(self):
+        if not self.file_path:
+            return
+        
+        export_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Snapshots", 
+            f"{os.path.basename(self.file_path)}_snapshots.zip",
+            "ZIP files (*.zip)"
+        )
+        
+        if export_path:
+            if export_snapshots(self.file_path, export_path):
+                QMessageBox.information(self, "Success", "Snapshots exported successfully.")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to export snapshots.")
+    
+    def import_snapshots(self):
+        if not self.file_path:
+            return
+        
+        import_path, _ = QFileDialog.getOpenFileName(
+            self, "Import Snapshots", "", "ZIP files (*.zip)"
+        )
+        
+        if import_path:
+            if import_snapshots(self.file_path, import_path):
+                QMessageBox.information(self, "Success", "Snapshots imported successfully.")
+                self.update_info()
+                # Signal parent to refresh
+                if hasattr(self.parent(), 'refresh_current_file'):
+                    self.parent().refresh_current_file()
+            else:
+                QMessageBox.warning(self, "Error", "Failed to import snapshots.")
+
 class ChangeHandler(FileSystemEventHandler):
     def __init__(self, callback):
         super().__init__()
@@ -241,6 +522,8 @@ class MainWindow(QMainWindow):
         files_layout.addWidget(QLabel("tracked files", objectName="header"))
         self.files_list = QListWidget()
         self.files_list.itemClicked.connect(self.show_versions)
+        self.files_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.files_list.customContextMenuRequested.connect(self.show_files_context_menu)
         files_layout.addWidget(self.files_list)
 
         versions_panel = QWidget()
@@ -249,6 +532,8 @@ class MainWindow(QMainWindow):
         versions_layout.addWidget(QLabel("version history", objectName="header"))
         self.versions_list = QListWidget()
         self.versions_list.itemClicked.connect(self.show_preview)
+        self.versions_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.versions_list.customContextMenuRequested.connect(self.show_versions_context_menu)
         versions_layout.addWidget(self.versions_list)
 
         preview_panel = QWidget()
@@ -275,6 +560,122 @@ class MainWindow(QMainWindow):
         layout.addLayout(top)
         layout.addWidget(splitter)
         layout.addLayout(bottom)
+
+    def show_files_context_menu(self, position):
+        """Show context menu for files list."""
+        item = self.files_list.itemAt(position)
+        if item:
+            menu = QMenu()
+            
+            manage_action = QAction("Manage Snapshots", self)
+            manage_action.triggered.connect(lambda: self.manage_snapshots(item))
+            menu.addAction(manage_action)
+            
+            remove_action = QAction("Remove from Tracking", self)
+            remove_action.triggered.connect(lambda: self.remove_file_from_tracking(item))
+            menu.addAction(remove_action)
+            
+            menu.exec_(self.files_list.mapToGlobal(position))
+    
+    def show_versions_context_menu(self, position):
+        """Show context menu for versions list."""
+        item = self.versions_list.itemAt(position)
+        if item:
+            menu = QMenu()
+            
+            edit_action = QAction("Edit Label/Notes", self)
+            edit_action.triggered.connect(lambda: self.edit_snapshot_metadata(item))
+            menu.addAction(edit_action)
+            
+            delete_action = QAction("Delete Snapshot", self)
+            delete_action.triggered.connect(lambda: self.delete_snapshot_item(item))
+            menu.addAction(delete_action)
+            
+            menu.exec_(self.versions_list.mapToGlobal(position))
+    
+    def manage_snapshots(self, file_item):
+        """Open snapshot management dialog."""
+        file_path = file_item.data(Qt.UserRole)
+        dialog = SnapshotManagementDialog(self, file_path)
+        dialog.exec_()
+    
+    def remove_file_from_tracking(self, file_item):
+        """Remove a file from tracking."""
+        file_path = file_item.data(Qt.UserRole)
+        filename = os.path.basename(file_path)
+        
+        reply = QMessageBox.question(
+            self, "Remove File", 
+            f"Remove '{filename}' from tracking?\n\nThis will stop tracking the file but won't delete existing snapshots.",
+            QMessageBox.Yes | QMessageBox.No, 
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Remove from tracked files
+            if file_path in self.tracked:
+                del self.tracked[file_path]
+            
+            # Remove from UI
+            row = self.files_list.row(file_item)
+            self.files_list.takeItem(row)
+            
+            # Clear versions and preview
+            self.versions_list.clear()
+            self.preview_box.clear()
+            self.restore_btn.setEnabled(False)
+            
+            # Update monitoring
+            self.update_monitoring()
+    
+    def edit_snapshot_metadata(self, version_item):
+        """Edit metadata for a snapshot."""
+        snapshot_path = version_item.data(Qt.UserRole)
+        dialog = SnapshotMetadataDialog(self, snapshot_path)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            metadata = dialog.get_metadata()
+            update_snapshot_metadata(snapshot_path, metadata["label"], metadata["notes"])
+            
+            # Update the display
+            self.refresh_versions_display()
+    
+    def delete_snapshot_item(self, version_item):
+        """Delete a specific snapshot."""
+        snapshot_path = version_item.data(Qt.UserRole)
+        filename = os.path.basename(snapshot_path)
+        
+        reply = QMessageBox.question(
+            self, "Delete Snapshot", 
+            f"Delete snapshot '{filename}'?\n\nThis action cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No, 
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if delete_snapshot(snapshot_path):
+                # Remove from UI
+                row = self.versions_list.row(version_item)
+                self.versions_list.takeItem(row)
+                
+                # Clear preview if this was the selected item
+                if self.versions_list.currentItem() is None:
+                    self.preview_box.clear()
+                    self.restore_btn.setEnabled(False)
+                
+                QMessageBox.information(self, "Success", "Snapshot deleted successfully.")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to delete snapshot.")
+    
+    def refresh_versions_display(self):
+        """Refresh the versions list display."""
+        current_file_item = self.files_list.currentItem()
+        if current_file_item:
+            self.show_versions(current_file_item)
+    
+    def refresh_current_file(self):
+        """Refresh the current file's versions (called from dialogs)."""
+        self.refresh_versions_display()
 
     def add_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "select file to track")
@@ -324,9 +725,20 @@ class MainWindow(QMainWindow):
         file_path = item.data(Qt.UserRole)
         versions = list_snapshots(file_path)
         for v in versions:
-            display = format_snap_time(os.path.basename(v))
-            version_item = QListWidgetItem(display)
-            version_item.setToolTip(os.path.basename(v))
+            # Get metadata
+            metadata = load_snapshot_metadata(v)
+            
+            # Create display text
+            time_str = format_snap_time(os.path.basename(v))
+            display_parts = [time_str]
+            
+            if metadata.get("label"):
+                display_parts.append(f"[{metadata['label']}]")
+            
+            display_text = " ".join(display_parts)
+            
+            version_item = QListWidgetItem(display_text)
+            version_item.setToolTip(f"File: {os.path.basename(v)}\nNotes: {metadata.get('notes', 'No notes')}")
             version_item.setData(Qt.UserRole, v)
             version_item.setData(Qt.UserRole + 1, file_path)
             self.versions_list.addItem(version_item)
