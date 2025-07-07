@@ -102,7 +102,7 @@ def list_snapshots(file_path):
     snapdir = get_snapshot_dir(file_path)
     if not os.path.exists(snapdir):
         return []
-    files = [os.path.join(snapdir, f) for f in os.listdir(snapdir)]
+    files = [os.path.join(snapdir, f) for f in os.listdir(snapdir) if not f.endswith('.note')]
     def snapkey(f):
         m = re.search(r'_(\d{8}_\d{6}_\d{6})', os.path.basename(f))
         if m:
