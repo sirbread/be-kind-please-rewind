@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTreeWidget, QTreeWidgetItem, QFileDialog, QSplitter,
     QLabel, QTextBrowser, QComboBox, QMessageBox,
-    QInputDialog, QTextEdit, QStyle
+    QInputDialog, QTextEdit, QStyle, QLineEdit, QTreeWidgetItemIterator
 )
 from PyQt5.QtCore import Qt, QTimer, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap, QIcon
@@ -56,6 +56,7 @@ QComboBox { background-color: #4f5254; border: 1px solid #5f6264; padding: 5px; 
 QComboBox::drop-down { border: none; }
 QComboBox QAbstractItemView { background-color: #4f5254; border: 1px solid #5f6264; selection-background-color: #0078d7; }
 QLabel#header { font-weight: bold; padding: 5px 0px; font-size: 11pt; }
+QLineEdit { background-color: #3c3f41; border: 1px solid #4f5254; border-radius: 4px; padding: 5px; }
 QSplitter::handle { background-color: #4f5254; }
 QSplitter::handle:horizontal { width: 1px; }
 QSplitter::handle:vertical { height: 1px; }
@@ -95,7 +96,10 @@ def load_notes(file_path):
     notes_path = get_notes_path(file_path)
     if os.path.exists(notes_path):
         with open(notes_path, 'r') as f:
-            return json.load(f)
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {}
     return {}
 
 def save_notes(file_path, notes):
@@ -232,6 +236,7 @@ class MainWindow(QMainWindow):
         self.watcher_thread = None
         self.poll_timer = QTimer(self)
         self.poll_timer.timeout.connect(self.poll_files)
+        self.notes = {}
         self.init_ui()
 
     def init_ui(self):
@@ -250,11 +255,15 @@ class MainWindow(QMainWindow):
 
         files_panel = QWidget(); files_layout = QVBoxLayout(files_panel); files_layout.setContentsMargins(0,0,0,0)
         files_layout.addWidget(QLabel("tracked items", objectName="header"))
+        self.file_search_box = QLineEdit(); self.file_search_box.setPlaceholderText("search tracked items..."); self.file_search_box.textChanged.connect(self.filter_files_tree)
+        files_layout.addWidget(self.file_search_box)
         self.files_tree = QTreeWidget(); self.files_tree.setHeaderHidden(True); self.files_tree.itemClicked.connect(self.on_item_selected)
         files_layout.addWidget(self.files_tree)
 
         versions_panel = QWidget(); versions_layout = QVBoxLayout(versions_panel); versions_layout.setContentsMargins(0,0,0,0)
         versions_layout.addWidget(QLabel("version history", objectName="header"))
+        self.version_search_box = QLineEdit(); self.version_search_box.setPlaceholderText("search versions..."); self.version_search_box.textChanged.connect(self.filter_versions_list)
+        versions_layout.addWidget(self.version_search_box)
         self.versions_list = QTreeWidget(); self.versions_list.setHeaderHidden(True); self.versions_list.itemClicked.connect(self.on_version_selected)
         versions_layout.addWidget(self.versions_list)
         
@@ -284,7 +293,7 @@ class MainWindow(QMainWindow):
     def on_item_selected(self, item, column):
         path = item.data(0, Qt.UserRole)
         if path and os.path.isfile(path):
-            self.show_versions(item)
+            self.show_versions()
             self.export_btn.setEnabled(True)
         else:
             self.versions_list.clear()
@@ -366,6 +375,27 @@ class MainWindow(QMainWindow):
                 item.setData(0, Qt.UserRole, path)
                 item.setToolTip(0, path)
                 item.setIcon(0, self.style().standardIcon(QStyle.SP_FileIcon))
+        self.filter_files_tree(self.file_search_box.text())
+
+    def filter_files_tree(self, text):
+        search_term = text.lower()
+        root = self.files_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            is_match = search_term in item.text(0).lower()
+            
+            if item.childCount() > 0:
+                has_visible_child = False
+                for j in range(item.childCount()):
+                    child = item.child(j)
+                    child_is_match = search_term in child.text(0).lower()
+                    child.setHidden(not child_is_match)
+                    if not child.isHidden():
+                        has_visible_child = True
+                item.setHidden(not has_visible_child)
+            else:
+                item.setHidden(not is_match)
+
         self.files_tree.expandAll()
 
     def update_monitoring(self):
@@ -411,8 +441,6 @@ class MainWindow(QMainWindow):
         elif event_type == 'deleted':
             self.handle_file_deletion(path)
         elif event_type == 'moved':
-            #treat as delete and create for now
-            #we love cutting corners
             pass
 
     def handle_file_change(self, file_path, new_hash):
@@ -431,14 +459,19 @@ class MainWindow(QMainWindow):
     def refresh_versions_if_selected(self, file_path):
         curr_item = self.files_tree.currentItem()
         if curr_item and curr_item.data(0, Qt.UserRole) == file_path:
-            self.show_versions(curr_item)
+            self.show_versions()
 
-
-    def show_versions(self, item):
+    def show_versions(self):
         self.versions_list.clear()
         self.preview_box.clear(); self.note_edit.clear()
         self.restore_btn.setEnabled(False); self.delete_snap_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
-        file_path = item.data(0, Qt.UserRole)
+        
+        current_item = self.files_tree.currentItem()
+        if not current_item: return
+        file_path = current_item.data(0, Qt.UserRole)
+        if not file_path or not os.path.isfile(file_path): return
+
+        self.notes = load_notes(file_path)
         versions = list_snapshots(file_path)
         for v_name in versions:
             display = format_snap_time(v_name)
@@ -447,7 +480,21 @@ class MainWindow(QMainWindow):
             version_item.setData(0, Qt.UserRole, os.path.join(get_snapshot_dir(file_path), v_name))
             version_item.setData(0, Qt.UserRole + 1, file_path)
             version_item.setData(0, Qt.UserRole + 2, v_name)
+        
+        self.filter_versions_list(self.version_search_box.text())
 
+    def filter_versions_list(self, text):
+        search_term = text.lower()
+        iterator = QTreeWidgetItemIterator(self.versions_list)
+        while iterator.value():
+            item = iterator.value()
+            snap_name = item.data(0, Qt.UserRole + 2)
+            note = self.notes.get(snap_name, "")
+            is_visible = search_term in item.text(0).lower() or search_term in note.lower()
+            item.setHidden(not is_visible)
+            iterator += 1
+
+            
     def show_preview(self, item):
         if not item: return
         version_path = item.data(0, Qt.UserRole)
@@ -490,7 +537,7 @@ class MainWindow(QMainWindow):
             os.remove(version_path)
             notes = load_notes(orig_path)
             if snap_name in notes: del notes[snap_name]; save_notes(orig_path, notes)
-            self.refresh_versions_if_selected(orig_path)
+            self.show_versions()
 
     def save_note(self):
         curr = self.versions_list.currentItem()
@@ -505,8 +552,8 @@ class MainWindow(QMainWindow):
         curr = self.versions_list.currentItem()
         if not curr: self.note_edit.clear(); return
         snap_name = curr.data(0, Qt.UserRole + 2); orig_path = curr.data(0, Qt.UserRole + 1)
-        notes = load_notes(orig_path)
-        self.note_edit.setPlainText(notes.get(snap_name, ""))
+        self.notes = load_notes(orig_path)
+        self.note_edit.setPlainText(self.notes.get(snap_name, ""))
 
     def import_snapshots(self):
         curr_file_item = self.files_tree.currentItem()
@@ -517,7 +564,7 @@ class MainWindow(QMainWindow):
         zip_path, _ = QFileDialog.getOpenFileName(self, "select snapshot zip to import", "", "Zip Files (*.zip)")
         if not zip_path: return
         with zipfile.ZipFile(zip_path, 'r') as zipf: zipf.extractall(get_snapshot_dir(orig_path))
-        self.refresh_versions_if_selected(orig_path)
+        self.show_versions()
         QMessageBox.information(self, "import complete", "snapshots have been imported.")
 
     def export_snapshots(self):
