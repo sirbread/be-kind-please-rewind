@@ -8,6 +8,7 @@ import re
 import json
 import zipfile
 import fnmatch
+import html
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -157,8 +158,8 @@ def current_timestamp():
     return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
 def make_snapshot_name(orig_name):
-    base, ext = os.path.splitext(orig_name)
-    return f"{base}_{current_timestamp()}{ext}"
+    _, ext = os.path.splitext(orig_name)
+    return f"_{current_timestamp()}{ext}"
 
 def save_snapshot(file_path, note=None):
     if not os.path.exists(file_path): return None, None
@@ -191,7 +192,7 @@ def format_snap_time(fname):
             custom_name = re.sub(r'(_\d{8}_\d{6}_\d{6}\..*)$', '', fname)
             dt = datetime.strptime(m.group(1), "%Y%m%d_%H%M%S_%f")
             time_str = dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            if custom_name and custom_name != os.path.splitext(fname)[0]:
+            if custom_name:
                 return f"{custom_name} ({time_str})"
             return time_str
         except ValueError: pass
@@ -203,6 +204,10 @@ def get_text_diff(snap, curr):
         with open(curr, encoding="utf-8", errors="ignore") as f: right = f.readlines()
     except Exception as e:
         return f"<pre>could not read files: {e}</pre>"
+
+    left = [html.escape(line) for line in left]
+    right = [html.escape(line) for line in right]
+
     seq = difflib.SequenceMatcher(None, left, right)
     l, r = ['<table class="content-table"><tr><th>&nbsp;</th><th>selected version</th></tr>'], ['<table class="content-table"><tr><th>&nbsp;</th><th>current file</th></tr>']
     for opcode, i1,i2, j1,j2 in seq.get_opcodes():
