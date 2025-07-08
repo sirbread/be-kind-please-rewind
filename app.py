@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QTreeWidget, QTreeWidgetItem, QFileDialog, QSplitter,
     QLabel, QTextBrowser, QComboBox, QMessageBox,
     QInputDialog, QTextEdit, QStyle, QLineEdit, QTreeWidgetItemIterator,
-    QSystemTrayIcon, QMenu, QDialog, QDialogButtonBox
+    QSystemTrayIcon, QMenu, QDialog, QDialogButtonBox, QStatusBar
 )
 from PyQt5.QtCore import Qt, QTimer, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap, QIcon
@@ -68,12 +68,8 @@ QSplitter::handle:vertical { height: 1px; }
 QTextEdit { background-color: #3c3f41; border: 1px solid #4f5254; border-radius: 4px; }
 QPushButton#pause_btn[paused="true"] { background-color: #8c2f2f; }
 QPushButton#pause_btn[paused="true"]:hover { background-color: #a63636; }
-QLabel#tracked_header, QLabel#preview_header {
-    padding-top: 15px;
-    padding-bottom: 5px;
-    font-weight: bold;
-    font-size: 11pt;
-}
+QStatusBar { border-top: 1px solid #4f5254; }
+QStatusBar QLabel#pause_status { background-color: #8c2f2f; color: white; padding: 2px 5px; border-radius: 4px; font-weight: bold; }
 """
 
 DIFF_CSS = """
@@ -196,9 +192,9 @@ def get_text_diff(snap, curr):
         with open(snap, encoding="utf-8", errors="ignore") as f: left = f.readlines()
         with open(curr, encoding="utf-8", errors="ignore") as f: right = f.readlines()
     except Exception as e:
-        return f"<pre>Could not read files: {e}</pre>"
+        return f"<pre>could not read files: {e}</pre>"
     seq = difflib.SequenceMatcher(None, left, right)
-    l, r = ['<table class="content-table"><tr><th>&nbsp;</th><th>Selected Version</th></tr>'], ['<table class="content-table"><tr><th>&nbsp;</th><th>Current File</th></tr>']
+    l, r = ['<table class="content-table"><tr><th>&nbsp;</th><th>selected version</th></tr>'], ['<table class="content-table"><tr><th>&nbsp;</th><th>current file</th></tr>']
     for opcode, i1,i2, j1,j2 in seq.get_opcodes():
         if opcode == "equal":
             for i, j in zip(range(i1,i2), range(j1,j2)):
@@ -391,6 +387,11 @@ class MainWindow(QMainWindow):
         splitter.setSizes([250, 350, 800])
 
         layout.addLayout(top); layout.addWidget(splitter)
+        
+        self.setStatusBar(QStatusBar(self))
+        self.statusBar().showMessage(" ")
+        self.pause_status_label = QLabel("tracking paused")
+        self.pause_status_label.setObjectName("pause_status")
 
     def init_tray_icon(self):
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -432,6 +433,11 @@ class MainWindow(QMainWindow):
         self.remove_action.setEnabled(is_top_level)
         self.take_snapshot_btn.setEnabled(is_file)
 
+        if path:
+            self.statusBar().showMessage(path)
+        else:
+            self.statusBar().showMessage(" ")
+
         if is_file:
             self.show_versions()
         else:
@@ -447,6 +453,11 @@ class MainWindow(QMainWindow):
         self.snapshot_menu_btn.setEnabled(True)
         self.load_note()
         
+        version_path = item.data(0, Qt.UserRole)
+        if version_path and os.path.exists(version_path):
+            file_size = os.path.getsize(version_path)
+            self.statusBar().showMessage(f"snapshot: {os.path.basename(version_path)}  |  size: {file_size / 1024:.2f} kb")
+
     def open_exclusions_editor(self):
         dialog = ExclusionsDialog(self)
         if dialog.exec_() == QDialog.Accepted:
@@ -515,6 +526,7 @@ class MainWindow(QMainWindow):
         self.versions_list.clear(); self.preview_box.clear(); self.note_edit.clear()
         self.remove_action.setEnabled(False); self.export_action.setEnabled(False)
         self.snapshot_menu_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
+        self.statusBar().showMessage(" ")
         self.update_monitoring()
 
     def update_files_tree(self):
@@ -575,11 +587,13 @@ class MainWindow(QMainWindow):
             self.pause_btn.setProperty("paused", True)
             self.stop_monitoring()
             self.tray_icon.setToolTip("be kind, please rewind (paused)")
+            self.statusBar().addPermanentWidget(self.pause_status_label)
         else:
             self.pause_btn.setText("pause tracking")
             self.pause_btn.setProperty("paused", False)
             self.update_monitoring()
             self.tray_icon.setToolTip("be kind, please rewind")
+            self.statusBar().removeWidget(self.pause_status_label)
 
         self.actions_menu_btn.setEnabled(not paused)
         self.exclusions_btn.setEnabled(not paused)
@@ -722,7 +736,7 @@ class MainWindow(QMainWindow):
             self.preview_box.setHtml(f'<body style="text-align:center;"><img src="file:///{version_path}"><p style="color:white;">{os.path.basename(version_path)}</p></body>')
         else:
             file_size = os.path.getsize(version_path)
-            self.preview_box.setText(f"no preview available.\n\nFile: {os.path.basename(version_path)}\nSize: {file_size / 1024:.2f} KB")
+            self.preview_box.setText(f"no preview available.\n\nfile: {os.path.basename(version_path)}\nsize: {file_size / 1024:.2f} kb")
 
     def restore_version(self):
         current_item = self.versions_list.currentItem()
