@@ -285,6 +285,8 @@ class MainWindow(QMainWindow):
         bottom = QHBoxLayout()
         self.delete_snap_btn = QPushButton("delete snapshot"); self.delete_snap_btn.setEnabled(False); self.delete_snap_btn.clicked.connect(self.delete_snapshot)
         bottom.addWidget(self.delete_snap_btn); bottom.addStretch()
+        self.restore_as_copy_btn = QPushButton("restore as copy"); self.restore_as_copy_btn.setEnabled(False); self.restore_as_copy_btn.clicked.connect(self.restore_as_copy)
+        bottom.addWidget(self.restore_as_copy_btn)
         self.restore_btn = QPushButton("restore selected version"); self.restore_btn.setEnabled(False); self.restore_btn.clicked.connect(self.restore_version)
         bottom.addWidget(self.restore_btn)
 
@@ -292,19 +294,28 @@ class MainWindow(QMainWindow):
 
     def on_item_selected(self, item, column):
         path = item.data(0, Qt.UserRole)
-        if path and os.path.isfile(path):
+        is_file = path and os.path.isfile(path)
+        
+        self.export_btn.setEnabled(is_file)
+        self.remove_btn.setEnabled(True)
+        
+        if is_file:
             self.show_versions()
-            self.export_btn.setEnabled(True)
         else:
             self.versions_list.clear()
             self.preview_box.clear()
             self.note_edit.clear()
-            self.export_btn.setEnabled(False)
-        self.remove_btn.setEnabled(True)
+            self.restore_btn.setEnabled(False)
+            self.restore_as_copy_btn.setEnabled(False)
+            self.delete_snap_btn.setEnabled(False)
+            self.save_note_btn.setEnabled(False)
 
     def on_version_selected(self, item, column):
         self.show_preview(item)
-        self.delete_snap_btn.setEnabled(True); self.save_note_btn.setEnabled(True)
+        self.delete_snap_btn.setEnabled(True)
+        self.save_note_btn.setEnabled(True)
+        self.restore_btn.setEnabled(True)
+        self.restore_as_copy_btn.setEnabled(True)
         self.load_note()
 
     def add_file(self):
@@ -355,7 +366,8 @@ class MainWindow(QMainWindow):
         self.update_files_tree()
         self.versions_list.clear(); self.preview_box.clear(); self.note_edit.clear()
         self.remove_btn.setEnabled(False); self.export_btn.setEnabled(False)
-        self.restore_btn.setEnabled(False); self.delete_snap_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
+        self.restore_btn.setEnabled(False); self.restore_as_copy_btn.setEnabled(False)
+        self.delete_snap_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
         self.update_monitoring()
 
     def update_files_tree(self):
@@ -464,7 +476,7 @@ class MainWindow(QMainWindow):
     def show_versions(self):
         self.versions_list.clear()
         self.preview_box.clear(); self.note_edit.clear()
-        self.restore_btn.setEnabled(False); self.delete_snap_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
+        self.restore_btn.setEnabled(False); self.restore_as_copy_btn.setEnabled(False); self.delete_snap_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
         
         current_item = self.files_tree.currentItem()
         if not current_item: return
@@ -508,7 +520,6 @@ class MainWindow(QMainWindow):
         else:
             file_size = os.path.getsize(version_path)
             self.preview_box.setText(f"no preview available.\n\nFile: {os.path.basename(version_path)}\nSize: {file_size / 1024:.2f} KB")
-        self.restore_btn.setEnabled(True)
 
     def restore_version(self):
         current_item = self.versions_list.currentItem()
@@ -526,6 +537,25 @@ class MainWindow(QMainWindow):
             self.file_hashes[orig_path] = self.hash_file(orig_path)
             QMessageBox.information(self, "yay", "file restored successfully.")
             self.refresh_versions_if_selected(orig_path)
+
+    def restore_as_copy(self):
+        current_item = self.versions_list.currentItem()
+        if not current_item: return
+        
+        version_path = current_item.data(0, Qt.UserRole)
+        orig_path = current_item.data(0, Qt.UserRole + 1)
+        
+        base, ext = os.path.splitext(orig_path)
+        suggested_name = f"{base}_restored_copy{ext}"
+
+        save_path, _ = QFileDialog.getSaveFileName(self, "save restored Copy As...", suggested_name)
+
+        if save_path:
+            try:
+                shutil.copy2(version_path, save_path)
+                QMessageBox.information(self, "success", f"restored copy saved to:\n{save_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "error", f"could not save file:\n{e}")
 
     def delete_snapshot(self):
         curr = self.versions_list.currentItem()

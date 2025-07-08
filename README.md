@@ -6,6 +6,6 @@
     - ~~delete old ones iyk~~
     - ~~import/export~~
     - ~~snapshot labels/notes~~
-- search/filter
-- restore as copy
+- ~~search/filter~~
+- ~~restore as copy~~
 - system tray (background task) and notifs when modified
