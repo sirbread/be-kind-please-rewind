@@ -159,7 +159,7 @@ def current_timestamp():
 
 def make_snapshot_name(orig_name):
     _, ext = os.path.splitext(orig_name)
-    return f"_{current_timestamp()}{ext}"
+    return f"{current_timestamp()}{ext}"
 
 def save_snapshot(file_path, note=None):
     if not os.path.exists(file_path): return None, None
@@ -178,7 +178,7 @@ def list_snapshots(file_path):
     if not os.path.exists(snapdir): return []
     files = [f for f in os.listdir(snapdir) if f not in ["notes.json", "settings.json"]]
     def snapkey(f):
-        m = re.search(r'_(\d{8}_\d{6}_\d{6})', f)
+        m = re.search(r'(\d{8}_\d{6}_\d{6})', f)
         if m:
             try: return datetime.strptime(m.group(1), "%Y%m%d_%H%M%S_%f")
             except ValueError: pass
@@ -186,17 +186,26 @@ def list_snapshots(file_path):
     return sorted(files, key=snapkey, reverse=True)
 
 def format_snap_time(fname):
-    m = re.search(r'_(\d{8}_\d{6}_\d{6})', fname)
-    if m:
-        try:
-            custom_name = re.sub(r'(_\d{8}_\d{6}_\d{6}\..*)$', '', fname)
-            dt = datetime.strptime(m.group(1), "%Y%m%d_%H%M%S_%f")
-            time_str = dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            if custom_name:
-                return f"{custom_name} ({time_str})"
-            return time_str
-        except ValueError: pass
-    return fname
+    match = re.match(r'^(.*?)(_?)(\d{8}_\d{6}_\d{6}\..*)$', fname)
+    if not match:
+        return fname
+
+    custom_name, separator, timestamp_part_with_ext = match.groups()
+    
+    ts_match = re.search(r'(\d{8}_\d{6}_\d{6})', timestamp_part_with_ext)
+    if not ts_match:
+        return fname 
+
+    try:
+        dt = datetime.strptime(ts_match.group(1), "%Y%m%d_%H%M%S_%f")
+        time_str = dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+    except ValueError:
+        return fname
+
+    if custom_name:
+        return f"{custom_name} ({time_str})"
+    else:
+        return time_str
 
 def get_text_diff(snap, curr):
     try:
@@ -804,18 +813,18 @@ class MainWindow(QMainWindow):
         orig_path = curr.data(0, Qt.UserRole + 1)
         old_snap_name = curr.data(0, Qt.UserRole + 2)
 
-        match = re.match(r'^(.*?)_(\d{8}_\d{6}_\d{6}\..*)$', old_snap_name)
+        match = re.match(r'^(.*?)_?(\d{8}_\d{6}_\d{6}\..*)$', old_snap_name)
         if not match:
             QMessageBox.warning(self, "rename failed", "could not parse the snapshot name format.")
             return
 
-        current_base_name = os.path.splitext(match.group(1))[0]
+        current_base_name = match.group(1) if match.group(1) else ""
         timestamp_part = match.group(2)
 
         new_base_name, ok = QInputDialog.getText(self, "rename snapshot", "enter new name for the snapshot:", text=current_base_name)
 
-        if ok and new_base_name and new_base_name != current_base_name:
-            new_snap_name = f"{new_base_name}_{timestamp_part}"
+        if ok and new_base_name != current_base_name:
+            new_snap_name = f"{new_base_name}_{timestamp_part}" if new_base_name else timestamp_part
             new_version_path = os.path.join(get_snapshot_dir(orig_path), new_snap_name)
 
             if os.path.exists(new_version_path):
