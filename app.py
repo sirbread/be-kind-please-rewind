@@ -25,6 +25,11 @@ from watchdog.events import FileSystemEventHandler
 
 from PIL import Image
 
+def resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
 def get_documents_dir():
     import os
     from pathlib import Path
@@ -300,9 +305,11 @@ class WatcherThread(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        icon_path = resource_path('bkpr.ico')
+        icon = QIcon(icon_path)
         self.setWindowTitle("be kind, please rewind")
         self.setGeometry(100, 100, 1400, 900)
-        self.setWindowIcon(QIcon('bkpr.ico'))
+        self.setWindowIcon(icon)
         self.tracked_paths = [] 
         self.file_hashes = {} 
         self.watcher_thread = None
@@ -312,6 +319,8 @@ class MainWindow(QMainWindow):
         self.is_quitting = False
         self.is_paused = False
         self.ignore_patterns = []
+        self.icon = icon
+        self.icon_path = icon_path
         self.init_ui()
         self.init_tray_icon()
         self.load_ignore_patterns()
@@ -423,7 +432,7 @@ class MainWindow(QMainWindow):
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
         self.tray_icon = QSystemTrayIcon(self)
-        self.tray_icon.setIcon(QIcon('bkpr.ico'))
+        self.tray_icon.setIcon(self.icon)
         self.tray_icon.setToolTip("be kind, please rewind")
         
         tray_menu = QMenu(self)
@@ -603,7 +612,6 @@ class MainWindow(QMainWindow):
                 item.setHidden(not has_visible_child)
             else:
                 item.setHidden(not is_match)
-
         self.files_tree.expandAll()
         
     def toggle_pause_tracking(self, paused):
@@ -620,11 +628,9 @@ class MainWindow(QMainWindow):
             self.update_monitoring()
             self.tray_icon.setToolTip("be kind, please rewind")
             self.statusBar().removeWidget(self.pause_status_label)
-
         self.actions_menu_btn.setEnabled(not paused)
         self.exclusions_btn.setEnabled(not paused)
         self.freq_combo.setEnabled(not paused)
-        
         self.style().unpolish(self.pause_btn)
         self.style().polish(self.pause_btn)
 
@@ -638,8 +644,6 @@ class MainWindow(QMainWindow):
         self.stop_monitoring()
         if not self.tracked_paths or self.is_paused:
             return
-
-
         freq = self.freq_combo.currentText()
         if freq == "on change":
             self.watcher_thread = WatcherThread(self.tracked_paths)
@@ -660,7 +664,6 @@ class MainWindow(QMainWindow):
 
             current_hash = self.hash_file(file_path)
             last_hash = self.file_hashes.get(file_path)
-
             if last_hash is None:
                 self.handle_file_creation(file_path)
             elif current_hash and current_hash != last_hash:
@@ -694,9 +697,7 @@ class MainWindow(QMainWindow):
     def refresh_versions_if_selected(self, file_path):
         current_item = self.files_tree.currentItem()
         if not current_item: return
-
         selected_path = current_item.data(0, Qt.UserRole)
-        
         if selected_path == file_path:
             self.show_versions()
         elif os.path.isdir(selected_path) and file_path.startswith(selected_path):
@@ -705,7 +706,6 @@ class MainWindow(QMainWindow):
     def show_versions(self):
         current_item = self.files_tree.currentItem()
         if not current_item: return
-
         file_path = current_item.data(0, Qt.UserRole)
         if not file_path or not os.path.isfile(file_path):
             self.versions_list.clear()
@@ -714,11 +714,9 @@ class MainWindow(QMainWindow):
         selected_version_path = None
         if self.versions_list.currentItem():
             selected_version_path = self.versions_list.currentItem().data(0, Qt.UserRole)
-
         self.versions_list.clear()
         self.preview_box.clear(); self.note_edit.clear()
         self.snapshot_menu_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
-        
         self.notes = load_notes(file_path)
         versions = list_snapshots(file_path)
         
@@ -726,21 +724,17 @@ class MainWindow(QMainWindow):
         for v_name in versions:
             display = format_snap_time(v_name)
             version_item = QTreeWidgetItem(self.versions_list, [display])
-            
             note = self.notes.get(v_name, "")
             tooltip = note if note else v_name
             version_item.setToolTip(0, tooltip)
-            
             version_path = os.path.join(get_snapshot_dir(file_path), v_name)
             version_item.setData(0, Qt.UserRole, version_path)
             version_item.setData(0, Qt.UserRole + 1, file_path)
             version_item.setData(0, Qt.UserRole + 2, v_name)
             if version_path == selected_version_path:
                 new_item_to_select = version_item
-        
         if new_item_to_select:
             self.versions_list.setCurrentItem(new_item_to_select)
-        
         self.filter_versions_list(self.version_search_box.text())
 
     def filter_versions_list(self, text):
@@ -789,13 +783,10 @@ class MainWindow(QMainWindow):
     def restore_as_copy(self):
         current_item = self.versions_list.currentItem()
         if not current_item: return
-        
         version_path = current_item.data(0, Qt.UserRole)
         orig_path = current_item.data(0, Qt.UserRole + 1)
-        
         base, ext = os.path.splitext(orig_path)
         suggested_name = f"{base}_restored_copy{ext}"
-
         save_path, _ = QFileDialog.getSaveFileName(self, "save restored copy as...", suggested_name)
 
         if save_path:
@@ -808,29 +799,22 @@ class MainWindow(QMainWindow):
     def rename_snapshot(self):
         curr = self.versions_list.currentItem()
         if not curr: return
-
         version_path = curr.data(0, Qt.UserRole)
         orig_path = curr.data(0, Qt.UserRole + 1)
         old_snap_name = curr.data(0, Qt.UserRole + 2)
-
         match = re.match(r'^(.*?)_?(\d{8}_\d{6}_\d{6}\..*)$', old_snap_name)
         if not match:
             QMessageBox.warning(self, "rename failed", "could not parse the snapshot name format.")
             return
-
         current_base_name = match.group(1) if match.group(1) else ""
         timestamp_part = match.group(2)
-
         new_base_name, ok = QInputDialog.getText(self, "rename snapshot", "enter new name for the snapshot:", text=current_base_name)
-
         if ok and new_base_name != current_base_name:
             new_snap_name = f"{new_base_name}_{timestamp_part}" if new_base_name else timestamp_part
             new_version_path = os.path.join(get_snapshot_dir(orig_path), new_snap_name)
-
             if os.path.exists(new_version_path):
                 QMessageBox.warning(self, "rename failed", "a snapshot with this name already exists.")
                 return
-
             try:
                 os.rename(version_path, new_version_path)
                 notes = load_notes(orig_path)
@@ -840,7 +824,6 @@ class MainWindow(QMainWindow):
                 
                 self.show_versions()
                 QMessageBox.information(self, "rename successful", "snapshot has been renamed.")
-
             except OSError as e:
                 QMessageBox.critical(self, "error", f"could not rename snapshot:\n{e}")
 
@@ -860,11 +843,9 @@ class MainWindow(QMainWindow):
         current_item = self.files_tree.currentItem()
         if not current_item:
             return
-        
         file_path = current_item.data(0, Qt.UserRole)
         if not file_path or not os.path.isfile(file_path):
             return
-
         note, ok = QInputDialog.getText(self, "take snapshot", "enter a note for this snapshot (optional):")
         if ok:
             save_snapshot(file_path, note)
@@ -922,7 +903,6 @@ class MainWindow(QMainWindow):
         if os.path.isdir(path):
             for root, dirs, fnames in os.walk(path, topdown=True):
                 dirs[:] = [d for d in dirs if not self.is_path_ignored(os.path.join(root, d))]
-                
                 for fname in fnames:
                     file_path = os.path.join(root, fname)
                     if not self.is_path_ignored(file_path):
@@ -964,12 +944,10 @@ class MainWindow(QMainWindow):
         try:
             with open(SETTINGS_PATH, 'r') as f:
                 settings_data = json.load(f)
-            
             if isinstance(settings_data, list):
                 self.tracked_paths = settings_data
             else:
                 self.tracked_paths = settings_data.get("tracked_paths", [])
-
             self.refresh_all_tracking()
         except (IOError, json.JSONDecodeError):
             print("sum happened, could not load settings.")
@@ -988,7 +966,6 @@ class MainWindow(QMainWindow):
         for file_path in all_files:
             if os.path.exists(file_path):
                 self.file_hashes[file_path] = self.hash_file(file_path)
-
         self.update_files_tree()
         self.update_monitoring()
 
@@ -1016,6 +993,8 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setStyleSheet(DARK_STYLESHEET)
+    icon_path = resource_path('bkpr.ico')
+    app.setWindowIcon(QIcon(icon_path))
     main_win = MainWindow()
     main_win.show()
     sys.exit(app.exec_())
