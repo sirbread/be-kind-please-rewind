@@ -1,10 +1,3 @@
 # be kind, please rewind
 ## todo
-- ~~track whole folders, not just files~~
-- ~~snapshot management~~
-    - ~~delete old ones iyk~~
-    - ~~import/export~~
-    - ~~snapshot labels/notes~~
-- ~~search/filter~~
-- ~~restore as copy~~
-- ~~system tray (background task) and notifs when modified~~
+making todo stuff on the fly chat 🥀

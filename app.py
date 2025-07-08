@@ -7,13 +7,14 @@ from datetime import datetime
 import re
 import json
 import zipfile
+import fnmatch
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTreeWidget, QTreeWidgetItem, QFileDialog, QSplitter,
     QLabel, QTextBrowser, QComboBox, QMessageBox,
     QInputDialog, QTextEdit, QStyle, QLineEdit, QTreeWidgetItemIterator,
-    QSystemTrayIcon, QMenu
+    QSystemTrayIcon, QMenu, QDialog, QDialogButtonBox
 )
 from PyQt5.QtCore import Qt, QTimer, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap, QIcon
@@ -43,6 +44,7 @@ APP_DATA_BASE = os.path.join(get_documents_dir(), "be-kind-please-rewind")
 SNAPSHOTS_BASE = os.path.join(APP_DATA_BASE, "snapshots")
 os.makedirs(SNAPSHOTS_BASE, exist_ok=True)
 SETTINGS_PATH = os.path.join(APP_DATA_BASE, "settings.json")
+IGNORE_FILE_PATH = os.path.join(APP_DATA_BASE, ".bkprignore")
 
 DARK_STYLESHEET = """
 QWidget { background-color: #2b2b2b; color: #ffffff; font-family: Segoe UI, Arial, sans-serif; font-size: 10pt; }
@@ -82,6 +84,37 @@ body { background-color: #3c3f41; color: #f0f0f0; font-family: Consolas, 'Courie
 pre { margin: 0; white-space: pre-wrap; }
 </style>
 """
+
+class ExclusionsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("edit exclusions")
+        self.setMinimumSize(400, 300)
+
+        layout = QVBoxLayout(self)
+        
+        info_label = QLabel("add file or folder patterns to exclude (one per line).\nsupports wildcards like `*` and `?`.")
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        self.editor = QTextEdit()
+        self.editor.setStyleSheet("font-family: Consolas, 'Courier New', monospace;")
+        layout.addWidget(self.editor)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        self.load_patterns()
+
+    def load_patterns(self):
+        if os.path.exists(IGNORE_FILE_PATH):
+            with open(IGNORE_FILE_PATH, 'r') as f:
+                self.editor.setPlainText(f.read())
+
+    def get_patterns(self):
+        return self.editor.toPlainText()
 
 def hash_file_path(path):
     return hashlib.sha256(os.path.abspath(path).lower().encode("utf-8")).hexdigest()
@@ -249,8 +282,10 @@ class MainWindow(QMainWindow):
         self.poll_timer.timeout.connect(self.poll_files)
         self.notes = {}
         self.is_quitting = False
+        self.ignore_patterns = []
         self.init_ui()
         self.init_tray_icon()
+        self.load_ignore_patterns()
         self.load_settings()
 
     def init_ui(self):
@@ -259,12 +294,13 @@ class MainWindow(QMainWindow):
         self.add_file_btn = QPushButton("+ add file"); self.add_file_btn.clicked.connect(self.add_file)
         self.add_folder_btn = QPushButton("+ add folder"); self.add_folder_btn.clicked.connect(self.add_folder)
         self.remove_btn = QPushButton("- remove"); self.remove_btn.clicked.connect(self.remove_item); self.remove_btn.setEnabled(False)
+        self.exclusions_btn = QPushButton("Edit Exclusions"); self.exclusions_btn.clicked.connect(self.open_exclusions_editor)
         self.import_btn = QPushButton("import snapshots"); self.import_btn.clicked.connect(self.import_snapshots)
         self.export_btn = QPushButton("export snapshots"); self.export_btn.clicked.connect(self.export_snapshots); self.export_btn.setEnabled(False)
         self.freq_combo = QComboBox(); self.freq_combo.addItems(["On Change", "Every 30 Seconds", "Every 1 Minute", "Every 5 Minutes"])
         self.freq_combo.currentTextChanged.connect(self.update_monitoring)
         top.addWidget(self.add_file_btn); top.addWidget(self.add_folder_btn); top.addWidget(self.remove_btn)
-        top.addWidget(self.import_btn); top.addWidget(self.export_btn); top.addStretch()
+        top.addWidget(self.exclusions_btn); top.addWidget(self.import_btn); top.addWidget(self.export_btn); top.addStretch()
         top.addWidget(QLabel("tracking frequency:")); top.addWidget(self.freq_combo)
 
         files_panel = QWidget(); files_layout = QVBoxLayout(files_panel); files_layout.setContentsMargins(0,0,0,0)
@@ -363,6 +399,15 @@ class MainWindow(QMainWindow):
         self.restore_btn.setEnabled(True)
         self.restore_as_copy_btn.setEnabled(True)
         self.load_note()
+        
+    def open_exclusions_editor(self):
+        dialog = ExclusionsDialog(self)
+        if dialog.exec_() == QDialog.Accepted:
+            patterns_text = dialog.get_patterns()
+            with open(IGNORE_FILE_PATH, 'w') as f:
+                f.write(patterns_text)
+            self.load_ignore_patterns()
+            self.refresh_all_tracking()
 
     def add_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "select file to track")
@@ -373,6 +418,10 @@ class MainWindow(QMainWindow):
         if path and path not in self.tracked_paths: self.add_path(path)
 
     def add_path(self, path):
+        if self.is_path_ignored(path):
+            QMessageBox.warning(self, "path ignored", "this file or folder cannot be tracked because it matches an exclusion pattern... check your exclusions.")
+            return
+
         note, ok = QInputDialog.getText(self, "initial snapshot note", "enter a note for the first snapshot(s) (optional):")
         if not ok: return
         self.tracked_paths.append(path)
@@ -385,6 +434,8 @@ class MainWindow(QMainWindow):
         self.update_monitoring()
 
     def track_new_file(self, file_path, note):
+        if self.is_path_ignored(file_path):
+            return
         save_snapshot(file_path, note)
         self.file_hashes[file_path] = self.hash_file(file_path)
 
@@ -427,6 +478,8 @@ class MainWindow(QMainWindow):
             
         self.files_tree.clear()
         for path in sorted(self.tracked_paths):
+            if self.is_path_ignored(path):
+                continue
             name = os.path.basename(path)
             if os.path.isdir(path):
                 parent_item = QTreeWidgetItem(self.files_tree, [name])
@@ -499,6 +552,8 @@ class MainWindow(QMainWindow):
                 self.handle_file_change(file_path, current_hash)
 
     def on_file_event(self, path):
+        if self.is_path_ignored(path):
+            return
         self.poll_files()
 
     def handle_file_change(self, file_path, new_hash):
@@ -681,16 +736,29 @@ class MainWindow(QMainWindow):
             for f in os.listdir(snap_dir): zipf.write(os.path.join(snap_dir, f), f)
         QMessageBox.information(self, "export complete", f"snapshots exported to {zip_path}")
 
+    def is_path_ignored(self, path):
+        for pattern in self.ignore_patterns:
+            if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(os.path.basename(path), pattern):
+                return True
+        return False
+
     def get_all_files_in_path(self, path):
         files = []
         if os.path.isdir(path):
-            for root, _, fnames in os.walk(path):
-                for fname in fnames: files.append(os.path.join(root, fname))
+            for root, dirs, fnames in os.walk(path, topdown=True):
+                dirs[:] = [d for d in dirs if not self.is_path_ignored(os.path.join(root, d))]
+                
+                for fname in fnames:
+                    file_path = os.path.join(root, fname)
+                    if not self.is_path_ignored(file_path):
+                        files.append(file_path)
         return files
 
     def get_all_tracked_files(self):
         all_files = set()
         for path in self.tracked_paths:
+            if self.is_path_ignored(path):
+                continue
             if os.path.isfile(path):
                 all_files.add(path)
             elif os.path.isdir(path):
@@ -706,9 +774,12 @@ class MainWindow(QMainWindow):
         except Exception: return None
 
     def save_settings(self):
+        settings = {
+            "tracked_paths": self.tracked_paths
+        }
         try:
             with open(SETTINGS_PATH, 'w') as f:
-                json.dump(self.tracked_paths, f, indent=4)
+                json.dump(settings, f, indent=4)
         except IOError:
             print("sum happened, could not save settings.")
 
@@ -717,18 +788,34 @@ class MainWindow(QMainWindow):
             return
         try:
             with open(SETTINGS_PATH, 'r') as f:
-                self.tracked_paths = json.load(f)
+                settings_data = json.load(f)
             
-            all_files = self.get_all_tracked_files()
-            for file_path in all_files:
-                if os.path.exists(file_path):
-                    self.file_hashes[file_path] = self.hash_file(file_path)
+            if isinstance(settings_data, list):
+                self.tracked_paths = settings_data
+            else:
+                self.tracked_paths = settings_data.get("tracked_paths", [])
 
-            self.update_files_tree()
-            self.update_monitoring()
+            self.refresh_all_tracking()
         except (IOError, json.JSONDecodeError):
-            print("sum happened, could not save settings.")
+            print("sum happened, could not load settings.")
             self.tracked_paths = []
+
+    def load_ignore_patterns(self):
+        if os.path.exists(IGNORE_FILE_PATH):
+            with open(IGNORE_FILE_PATH, 'r') as f:
+                self.ignore_patterns = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        else:
+            self.ignore_patterns = []
+
+    def refresh_all_tracking(self):
+        self.file_hashes.clear()
+        all_files = self.get_all_tracked_files()
+        for file_path in all_files:
+            if os.path.exists(file_path):
+                self.file_hashes[file_path] = self.hash_file(file_path)
+
+        self.update_files_tree()
+        self.update_monitoring()
 
     def closeEvent(self, event):
         if self.is_quitting:
