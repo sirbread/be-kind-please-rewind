@@ -12,7 +12,8 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTreeWidget, QTreeWidgetItem, QFileDialog, QSplitter,
     QLabel, QTextBrowser, QComboBox, QMessageBox,
-    QInputDialog, QTextEdit, QStyle, QLineEdit, QTreeWidgetItemIterator
+    QInputDialog, QTextEdit, QStyle, QLineEdit, QTreeWidgetItemIterator,
+    QSystemTrayIcon, QMenu
 )
 from PyQt5.QtCore import Qt, QTimer, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QImage, QPixmap, QIcon
@@ -205,19 +206,26 @@ class ChangeHandler(FileSystemEventHandler):
         now = datetime.now().timestamp()
         if self.last.get(path) and now - self.last[path] < 1: return
         self.last[path] = now
-        self.callback(event.event_type, path)
+        self.callback(path)
 
 class WatcherThread(QThread):
-    file_changed = pyqtSignal(str, str)
+    file_changed = pyqtSignal(str)
     def __init__(self, paths):
         super().__init__()
         self.paths = paths
         self.observer = Observer()
     def run(self):
         handler = ChangeHandler(self.file_changed.emit)
+        unique_dirs = set()
         for p in self.paths:
-            if os.path.isdir(p): self.observer.schedule(handler, p, recursive=True)
-            elif os.path.isfile(p): self.observer.schedule(handler, os.path.dirname(p), recursive=False)
+            if os.path.isdir(p):
+                unique_dirs.add(p)
+            elif os.path.isfile(p):
+                unique_dirs.add(os.path.dirname(p))
+
+        for d in unique_dirs:
+             self.observer.schedule(handler, d, recursive=True)
+
         self.observer.start()
         try:
             while not self.isInterruptionRequested(): self.msleep(200)
@@ -231,13 +239,16 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("be kind, please rewind")
         self.setGeometry(100, 100, 1400, 900)
+        self.setWindowIcon(self.style().standardIcon(QStyle.SP_DriveDVDIcon))
         self.tracked_paths = [] 
         self.file_hashes = {} 
         self.watcher_thread = None
         self.poll_timer = QTimer(self)
         self.poll_timer.timeout.connect(self.poll_files)
         self.notes = {}
+        self.is_quitting = False
         self.init_ui()
+        self.init_tray_icon()
 
     def init_ui(self):
         main = QWidget(); layout = QVBoxLayout(main); self.setCentralWidget(main)
@@ -267,7 +278,7 @@ class MainWindow(QMainWindow):
         self.versions_list = QTreeWidget(); self.versions_list.setHeaderHidden(True); self.versions_list.itemClicked.connect(self.on_version_selected)
         versions_layout.addWidget(self.versions_list)
         
-        notes_panel = QVBoxLayout(); notes_panel.addWidget(QLabel("Snapshot Note", objectName="header"))
+        notes_panel = QVBoxLayout(); notes_panel.addWidget(QLabel("snapshot note", objectName="header"))
         self.note_edit = QTextEdit(); self.note_edit.setPlaceholderText("add a note for the selected snapshot...")
         self.save_note_btn = QPushButton("save note"); self.save_note_btn.clicked.connect(self.save_note); self.save_note_btn.setEnabled(False)
         notes_panel.addWidget(self.note_edit); notes_panel.addWidget(self.save_note_btn)
@@ -291,6 +302,37 @@ class MainWindow(QMainWindow):
         bottom.addWidget(self.restore_btn)
 
         layout.addLayout(top); layout.addWidget(splitter); layout.addLayout(bottom)
+
+    def init_tray_icon(self):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(self.windowIcon())
+        self.tray_icon.setToolTip("be kind, please rewind")
+        
+        tray_menu = QMenu(self)
+        show_action = tray_menu.addAction("Show")
+        show_action.triggered.connect(self.show_window)
+        
+        quit_action = tray_menu.addAction("Exit")
+        quit_action.triggered.connect(self.quit_application)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self.tray_icon_activated)
+        self.tray_icon.show()
+
+    def tray_icon_activated(self, reason):
+        if reason == QSystemTrayIcon.Trigger:
+            self.show_window()
+
+    def show_window(self):
+        self.show()
+        self.setWindowState(self.windowState() & ~Qt.WindowMinimized | Qt.WindowActive)
+        self.activateWindow()
+
+    def quit_application(self):
+        self.is_quitting = True
+        self.close()
 
     def on_item_selected(self, item, column):
         path = item.data(0, Qt.UserRole)
@@ -438,40 +480,34 @@ class MainWindow(QMainWindow):
             self.poll_timer.start(intervals[freq])
 
     def poll_files(self):
-        all_current_files = set()
-        for path in self.tracked_paths:
-            if os.path.isfile(path): all_current_files.add(path)
-            elif os.path.isdir(path): all_current_files.update(self.get_all_files_in_path(path))
-        
-        for file_path, last_hash in list(self.file_hashes.items()):
-            if file_path not in all_current_files:
-                self.handle_file_deletion(file_path)
-            else:
-                curr_hash = self.hash_file(file_path)
-                if curr_hash and curr_hash != last_hash:
-                    self.handle_file_change(file_path, curr_hash)
-        
-        for file_path in all_current_files:
-            if file_path not in self.file_hashes:
-                self.handle_file_creation(file_path)
+        all_tracked_files = self.get_all_tracked_files()
+        for file_path in all_tracked_files:
+            if not os.path.exists(file_path):
+                if file_path in self.file_hashes:
+                    self.handle_file_deletion(file_path)
+                continue
 
-    def on_file_event(self, event_type, path):
-        if not any(path.startswith(p) for p in self.tracked_paths): return
-        
-        if event_type == 'modified':
-            curr_hash = self.hash_file(path)
-            if curr_hash and self.file_hashes.get(path) != curr_hash:
-                self.handle_file_change(path, curr_hash)
-        elif event_type == 'created':
-            self.handle_file_creation(path)
-        elif event_type == 'deleted':
-            self.handle_file_deletion(path)
-        elif event_type == 'moved':
-            pass
+            current_hash = self.hash_file(file_path)
+            last_hash = self.file_hashes.get(file_path)
+
+            if last_hash is None:
+                self.handle_file_creation(file_path)
+            elif current_hash and current_hash != last_hash:
+                self.handle_file_change(file_path, current_hash)
+
+    def on_file_event(self, path):
+        self.poll_files()
 
     def handle_file_change(self, file_path, new_hash):
         save_snapshot(file_path, "auto-snapshot on file change")
         self.file_hashes[file_path] = new_hash
+        if hasattr(self, 'tray_icon'):
+            self.tray_icon.showMessage(
+                "sum changed",
+                f"'{os.path.basename(file_path)}' was updated. a new snapshot has been created.",
+                QSystemTrayIcon.Information,
+                3000
+            )
         self.refresh_versions_if_selected(file_path)
 
     def handle_file_creation(self, file_path):
@@ -483,29 +519,50 @@ class MainWindow(QMainWindow):
         self.update_files_tree()
 
     def refresh_versions_if_selected(self, file_path):
-        curr_item = self.files_tree.currentItem()
-        if curr_item and curr_item.data(0, Qt.UserRole) == file_path:
+        current_item = self.files_tree.currentItem()
+        if not current_item: return
+
+        selected_path = current_item.data(0, Qt.UserRole)
+        
+        if selected_path == file_path:
+            self.show_versions()
+        elif os.path.isdir(selected_path) and file_path.startswith(selected_path):
             self.show_versions()
 
     def show_versions(self):
+        current_item = self.files_tree.currentItem()
+        if not current_item: return
+
+        file_path = current_item.data(0, Qt.UserRole)
+        if not file_path or not os.path.isfile(file_path):
+            self.versions_list.clear()
+            return
+            
+        selected_version_path = None
+        if self.versions_list.currentItem():
+            selected_version_path = self.versions_list.currentItem().data(0, Qt.UserRole)
+
         self.versions_list.clear()
         self.preview_box.clear(); self.note_edit.clear()
         self.restore_btn.setEnabled(False); self.restore_as_copy_btn.setEnabled(False); self.delete_snap_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
         
-        current_item = self.files_tree.currentItem()
-        if not current_item: return
-        file_path = current_item.data(0, Qt.UserRole)
-        if not file_path or not os.path.isfile(file_path): return
-
         self.notes = load_notes(file_path)
         versions = list_snapshots(file_path)
+        
+        new_item_to_select = None
         for v_name in versions:
             display = format_snap_time(v_name)
             version_item = QTreeWidgetItem(self.versions_list, [display])
             version_item.setToolTip(0, v_name)
-            version_item.setData(0, Qt.UserRole, os.path.join(get_snapshot_dir(file_path), v_name))
+            version_path = os.path.join(get_snapshot_dir(file_path), v_name)
+            version_item.setData(0, Qt.UserRole, version_path)
             version_item.setData(0, Qt.UserRole + 1, file_path)
             version_item.setData(0, Qt.UserRole + 2, v_name)
+            if version_path == selected_version_path:
+                new_item_to_select = version_item
+        
+        if new_item_to_select:
+            self.versions_list.setCurrentItem(new_item_to_select)
         
         self.filter_versions_list(self.version_search_box.text())
 
@@ -520,7 +577,6 @@ class MainWindow(QMainWindow):
             item.setHidden(not is_visible)
             iterator += 1
 
-            
     def show_preview(self, item):
         if not item: return
         version_path = item.data(0, Qt.UserRole)
@@ -629,6 +685,15 @@ class MainWindow(QMainWindow):
                 for fname in fnames: files.append(os.path.join(root, fname))
         return files
 
+    def get_all_tracked_files(self):
+        all_files = set()
+        for path in self.tracked_paths:
+            if os.path.isfile(path):
+                all_files.add(path)
+            elif os.path.isdir(path):
+                all_files.update(self.get_all_files_in_path(path))
+        return all_files
+
     def hash_file(self, path):
         try:
             sha256 = hashlib.sha256()
@@ -638,12 +703,28 @@ class MainWindow(QMainWindow):
         except Exception: return None
 
     def closeEvent(self, event):
-        self.poll_timer.stop()
-        if self.watcher_thread: self.watcher_thread.stop(); self.watcher_thread.wait()
-        event.accept()
+        if self.is_quitting:
+            if hasattr(self, 'tray_icon'):
+                self.tray_icon.hide()
+            self.poll_timer.stop()
+            if self.watcher_thread:
+                self.watcher_thread.stop()
+                self.watcher_thread.wait()
+            event.accept()
+        else:
+            event.ignore()
+            self.hide()
+            if hasattr(self, 'tray_icon'):
+                self.tray_icon.showMessage(
+                    "bkpr is still running",
+                    "minimized to system tray.",
+                    QSystemTrayIcon.Information,
+                    1500
+                )
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
     app.setStyleSheet(DARK_STYLESHEET)
     main_win = MainWindow()
     main_win.show()
