@@ -1,6 +1,5 @@
 # be kind, please rewind
 ## todo
-- make change intervals file specific
 - ~~track whole folders, not just files~~
 - ~~snapshot management~~
     - ~~delete old ones iyk~~

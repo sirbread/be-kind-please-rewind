@@ -39,8 +39,10 @@ def get_documents_dir():
     else:
         return os.path.join(os.path.expanduser("~"), "Documents")
 
-SNAPSHOTS_BASE = os.path.join(get_documents_dir(), "be-kind-please-rewind", "snapshots")
+APP_DATA_BASE = os.path.join(get_documents_dir(), "be-kind-please-rewind")
+SNAPSHOTS_BASE = os.path.join(APP_DATA_BASE, "snapshots")
 os.makedirs(SNAPSHOTS_BASE, exist_ok=True)
+SETTINGS_PATH = os.path.join(APP_DATA_BASE, "settings.json")
 
 DARK_STYLESHEET = """
 QWidget { background-color: #2b2b2b; color: #ffffff; font-family: Segoe UI, Arial, sans-serif; font-size: 10pt; }
@@ -249,6 +251,7 @@ class MainWindow(QMainWindow):
         self.is_quitting = False
         self.init_ui()
         self.init_tray_icon()
+        self.load_settings()
 
     def init_ui(self):
         main = QWidget(); layout = QVBoxLayout(main); self.setCentralWidget(main)
@@ -702,8 +705,34 @@ class MainWindow(QMainWindow):
             return sha256.hexdigest()
         except Exception: return None
 
+    def save_settings(self):
+        try:
+            with open(SETTINGS_PATH, 'w') as f:
+                json.dump(self.tracked_paths, f, indent=4)
+        except IOError:
+            print("sum happened, could not save settings.")
+
+    def load_settings(self):
+        if not os.path.exists(SETTINGS_PATH):
+            return
+        try:
+            with open(SETTINGS_PATH, 'r') as f:
+                self.tracked_paths = json.load(f)
+            
+            all_files = self.get_all_tracked_files()
+            for file_path in all_files:
+                if os.path.exists(file_path):
+                    self.file_hashes[file_path] = self.hash_file(file_path)
+
+            self.update_files_tree()
+            self.update_monitoring()
+        except (IOError, json.JSONDecodeError):
+            print("sum happened, could not save settings.")
+            self.tracked_paths = []
+
     def closeEvent(self, event):
         if self.is_quitting:
+            self.save_settings()
             if hasattr(self, 'tray_icon'):
                 self.tray_icon.hide()
             self.poll_timer.stop()
