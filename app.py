@@ -70,6 +70,12 @@ QPushButton#pause_btn[paused="true"] { background-color: #8c2f2f; }
 QPushButton#pause_btn[paused="true"]:hover { background-color: #a63636; }
 QStatusBar { border-top: 1px solid #4f5254; }
 QStatusBar QLabel#pause_status { background-color: #8c2f2f; color: white; padding: 2px 5px; border-radius: 4px; font-weight: bold; }
+QLabel#tracked_header, QLabel#preview_header {
+    padding-top: 15px;
+    padding-bottom: 5px;
+    font-weight: bold;
+    font-size: 11pt;
+}
 """
 
 DIFF_CSS = """
@@ -182,8 +188,12 @@ def format_snap_time(fname):
     m = re.search(r'_(\d{8}_\d{6}_\d{6})', fname)
     if m:
         try:
+            custom_name = re.sub(r'(_\d{8}_\d{6}_\d{6}\..*)$', '', fname)
             dt = datetime.strptime(m.group(1), "%Y%m%d_%H%M%S_%f")
-            return dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            time_str = dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            if custom_name and custom_name != os.path.splitext(fname)[0]:
+                return f"{custom_name} ({time_str})"
+            return time_str
         except ValueError: pass
     return fname
 
@@ -325,6 +335,8 @@ class MainWindow(QMainWindow):
         restore_overwrite_action = snapshot_menu.addAction("restore and overwrite")
         restore_overwrite_action.triggered.connect(self.restore_version)
         snapshot_menu.addSeparator()
+        rename_action = snapshot_menu.addAction("rename snapshot...")
+        rename_action.triggered.connect(self.rename_snapshot)
         self.delete_action = snapshot_menu.addAction("delete snapshot")
         self.delete_action.triggered.connect(self.delete_snapshot)
         self.snapshot_menu_btn.setMenu(snapshot_menu)
@@ -700,7 +712,11 @@ class MainWindow(QMainWindow):
         for v_name in versions:
             display = format_snap_time(v_name)
             version_item = QTreeWidgetItem(self.versions_list, [display])
-            version_item.setToolTip(0, v_name)
+            
+            note = self.notes.get(v_name, "")
+            tooltip = note if note else v_name
+            version_item.setToolTip(0, tooltip)
+            
             version_path = os.path.join(get_snapshot_dir(file_path), v_name)
             version_item.setData(0, Qt.UserRole, version_path)
             version_item.setData(0, Qt.UserRole + 1, file_path)
@@ -720,7 +736,8 @@ class MainWindow(QMainWindow):
             item = iterator.value()
             snap_name = item.data(0, Qt.UserRole + 2)
             note = self.notes.get(snap_name, "")
-            is_visible = search_term in item.text(0).lower() or search_term in note.lower()
+            display_text = item.text(0).lower()
+            is_visible = search_term in display_text or search_term in note.lower()
             item.setHidden(not is_visible)
             iterator += 1
 
@@ -773,6 +790,45 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "success", f"restored copy saved to:\n{save_path}")
             except Exception as e:
                 QMessageBox.critical(self, "error", f"could not save file:\n{e}")
+
+    def rename_snapshot(self):
+        curr = self.versions_list.currentItem()
+        if not curr: return
+
+        version_path = curr.data(0, Qt.UserRole)
+        orig_path = curr.data(0, Qt.UserRole + 1)
+        old_snap_name = curr.data(0, Qt.UserRole + 2)
+
+        match = re.match(r'^(.*?)_(\d{8}_\d{6}_\d{6}\..*)$', old_snap_name)
+        if not match:
+            QMessageBox.warning(self, "rename failed", "could not parse the snapshot name format.")
+            return
+
+        current_base_name = os.path.splitext(match.group(1))[0]
+        timestamp_part = match.group(2)
+
+        new_base_name, ok = QInputDialog.getText(self, "rename snapshot", "enter new name for the snapshot:", text=current_base_name)
+
+        if ok and new_base_name and new_base_name != current_base_name:
+            new_snap_name = f"{new_base_name}_{timestamp_part}"
+            new_version_path = os.path.join(get_snapshot_dir(orig_path), new_snap_name)
+
+            if os.path.exists(new_version_path):
+                QMessageBox.warning(self, "rename failed", "a snapshot with this name already exists.")
+                return
+
+            try:
+                os.rename(version_path, new_version_path)
+                notes = load_notes(orig_path)
+                if old_snap_name in notes:
+                    notes[new_snap_name] = notes.pop(old_snap_name)
+                    save_notes(orig_path, notes)
+                
+                self.show_versions()
+                QMessageBox.information(self, "rename successful", "snapshot has been renamed.")
+
+            except OSError as e:
+                QMessageBox.critical(self, "error", f"could not rename snapshot:\n{e}")
 
     def delete_snapshot(self):
         curr = self.versions_list.currentItem()
