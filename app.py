@@ -165,7 +165,7 @@ def save_snapshot(file_path, note=None):
 def list_snapshots(file_path):
     snapdir = get_snapshot_dir(file_path)
     if not os.path.exists(snapdir): return []
-    files = [f for f in os.listdir(snapdir) if f != "notes.json"]
+    files = [f for f in os.listdir(snapdir) if f not in ["notes.json", "settings.json"]]
     def snapkey(f):
         m = re.search(r'_(\d{8}_\d{6}_\d{6})', f)
         if m:
@@ -234,14 +234,14 @@ class ChangeHandler(FileSystemEventHandler):
     def __init__(self, callback):
         super().__init__()
         self.callback = callback
-        self.last = {}
-    def on_any_event(self, event):
-        if event.is_directory: return
-        path = event.src_path
-        now = datetime.now().timestamp()
-        if self.last.get(path) and now - self.last[path] < 1: return
-        self.last[path] = now
-        self.callback(path)
+
+    def on_modified(self, event):
+        if not event.is_directory:
+            self.callback(event.src_path)
+
+    def on_created(self, event):
+        if not event.is_directory:
+            self.callback(event.src_path)
 
 class WatcherThread(QThread):
     file_changed = pyqtSignal(str)
