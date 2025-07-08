@@ -66,6 +66,8 @@ QSplitter::handle { background-color: #4f5254; }
 QSplitter::handle:horizontal { width: 1px; }
 QSplitter::handle:vertical { height: 1px; }
 QTextEdit { background-color: #3c3f41; border: 1px solid #4f5254; border-radius: 4px; }
+QPushButton#pause_btn[paused="true"] { background-color: #8c2f2f; }
+QPushButton#pause_btn[paused="true"]:hover { background-color: #a63636; }
 """
 
 DIFF_CSS = """
@@ -282,6 +284,7 @@ class MainWindow(QMainWindow):
         self.poll_timer.timeout.connect(self.poll_files)
         self.notes = {}
         self.is_quitting = False
+        self.is_paused = False
         self.ignore_patterns = []
         self.init_ui()
         self.init_tray_icon()
@@ -294,14 +297,20 @@ class MainWindow(QMainWindow):
         self.add_file_btn = QPushButton("+ add file"); self.add_file_btn.clicked.connect(self.add_file)
         self.add_folder_btn = QPushButton("+ add folder"); self.add_folder_btn.clicked.connect(self.add_folder)
         self.remove_btn = QPushButton("- remove"); self.remove_btn.clicked.connect(self.remove_item); self.remove_btn.setEnabled(False)
-        self.exclusions_btn = QPushButton("Edit Exclusions"); self.exclusions_btn.clicked.connect(self.open_exclusions_editor)
+        self.exclusions_btn = QPushButton("edit exclusions"); self.exclusions_btn.clicked.connect(self.open_exclusions_editor)
         self.import_btn = QPushButton("import snapshots"); self.import_btn.clicked.connect(self.import_snapshots)
         self.export_btn = QPushButton("export snapshots"); self.export_btn.clicked.connect(self.export_snapshots); self.export_btn.setEnabled(False)
+        
+        self.pause_btn = QPushButton("pause tracking", self)
+        self.pause_btn.setObjectName("pause_btn")
+        self.pause_btn.setCheckable(True)
+        self.pause_btn.toggled.connect(self.toggle_pause_tracking)
+
         self.freq_combo = QComboBox(); self.freq_combo.addItems(["On Change", "Every 30 Seconds", "Every 1 Minute", "Every 5 Minutes"])
         self.freq_combo.currentTextChanged.connect(self.update_monitoring)
         top.addWidget(self.add_file_btn); top.addWidget(self.add_folder_btn); top.addWidget(self.remove_btn)
         top.addWidget(self.exclusions_btn); top.addWidget(self.import_btn); top.addWidget(self.export_btn); top.addStretch()
-        top.addWidget(QLabel("tracking frequency:")); top.addWidget(self.freq_combo)
+        top.addWidget(self.pause_btn); top.addWidget(QLabel("tracking frequency:")); top.addWidget(self.freq_combo)
 
         files_panel = QWidget(); files_layout = QVBoxLayout(files_panel); files_layout.setContentsMargins(0,0,0,0)
         files_layout.addWidget(QLabel("tracked items", objectName="header"))
@@ -521,11 +530,40 @@ class MainWindow(QMainWindow):
                 item.setHidden(not is_match)
 
         self.files_tree.expandAll()
+        
+    def toggle_pause_tracking(self, paused):
+        self.is_paused = paused
+        if paused:
+            self.pause_btn.setText("resume tracking")
+            self.pause_btn.setProperty("paused", True)
+            self.stop_monitoring()
+            self.tray_icon.setToolTip("be kind, please rewind (paused)")
+        else:
+            self.pause_btn.setText("pause tracking")
+            self.pause_btn.setProperty("paused", False)
+            self.update_monitoring()
+            self.tray_icon.setToolTip("be kind, please rewind")
+
+        self.add_file_btn.setEnabled(not paused)
+        self.add_folder_btn.setEnabled(not paused)
+        self.exclusions_btn.setEnabled(not paused)
+        self.freq_combo.setEnabled(not paused)
+        
+        self.style().unpolish(self.pause_btn)
+        self.style().polish(self.pause_btn)
+
+    def stop_monitoring(self):
+        if self.watcher_thread:
+            self.watcher_thread.stop()
+            self.watcher_thread = None
+        self.poll_timer.stop()
 
     def update_monitoring(self):
-        if self.watcher_thread: self.watcher_thread.stop(); self.watcher_thread = None
-        self.poll_timer.stop()
-        if not self.tracked_paths: return
+        self.stop_monitoring()
+        if not self.tracked_paths or self.is_paused:
+            return
+
+
         freq = self.freq_combo.currentText()
         if freq == "On Change":
             self.watcher_thread = WatcherThread(self.tracked_paths)
@@ -536,6 +574,7 @@ class MainWindow(QMainWindow):
             self.poll_timer.start(intervals[freq])
 
     def poll_files(self):
+        if self.is_paused: return
         all_tracked_files = self.get_all_tracked_files()
         for file_path in all_tracked_files:
             if not os.path.exists(file_path):
@@ -552,7 +591,7 @@ class MainWindow(QMainWindow):
                 self.handle_file_change(file_path, current_hash)
 
     def on_file_event(self, path):
-        if self.is_path_ignored(path):
+        if self.is_paused or self.is_path_ignored(path):
             return
         self.poll_files()
 
