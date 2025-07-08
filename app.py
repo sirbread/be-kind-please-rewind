@@ -68,6 +68,12 @@ QSplitter::handle:vertical { height: 1px; }
 QTextEdit { background-color: #3c3f41; border: 1px solid #4f5254; border-radius: 4px; }
 QPushButton#pause_btn[paused="true"] { background-color: #8c2f2f; }
 QPushButton#pause_btn[paused="true"]:hover { background-color: #a63636; }
+QLabel#tracked_header, QLabel#preview_header {
+    padding-top: 15px;
+    padding-bottom: 5px;
+    font-weight: bold;
+    font-size: 11pt;
+}
 """
 
 DIFF_CSS = """
@@ -316,17 +322,17 @@ class MainWindow(QMainWindow):
         self.export_action.setEnabled(False)
         self.manage_menu_btn.setMenu(manage_menu)
 
-        self.restore_menu_btn = QPushButton("snapshots")
-        restore_menu = QMenu(self)
-        restore_copy_action = restore_menu.addAction("restore as copy...")
+        self.snapshot_menu_btn = QPushButton("snapshot...")
+        snapshot_menu = QMenu(self)
+        restore_copy_action = snapshot_menu.addAction("restore as copy...")
         restore_copy_action.triggered.connect(self.restore_as_copy)
-        restore_overwrite_action = restore_menu.addAction("restore and overwrite")
+        restore_overwrite_action = snapshot_menu.addAction("restore and overwrite")
         restore_overwrite_action.triggered.connect(self.restore_version)
-        restore_menu.addSeparator()
-        self.delete_action = restore_menu.addAction("delete snapshot")
+        snapshot_menu.addSeparator()
+        self.delete_action = snapshot_menu.addAction("delete snapshot")
         self.delete_action.triggered.connect(self.delete_snapshot)
-        self.restore_menu_btn.setMenu(restore_menu)
-        self.restore_menu_btn.setEnabled(False)
+        self.snapshot_menu_btn.setMenu(snapshot_menu)
+        self.snapshot_menu_btn.setEnabled(False)
 
         self.exclusions_btn = QPushButton("edit exclusions"); self.exclusions_btn.clicked.connect(self.open_exclusions_editor)
         
@@ -340,21 +346,30 @@ class MainWindow(QMainWindow):
 
         top.addWidget(self.actions_menu_btn)
         top.addWidget(self.manage_menu_btn)
-        top.addWidget(self.restore_menu_btn)
+        top.addWidget(self.snapshot_menu_btn)
         top.addWidget(self.exclusions_btn); top.addStretch()
         top.addWidget(QLabel("tracking frequency:"))
         top.addWidget(self.freq_combo)
         top.addWidget(self.pause_btn)
 
         files_panel = QWidget(); files_layout = QVBoxLayout(files_panel); files_layout.setContentsMargins(0,0,0,0)
-        files_layout.addWidget(QLabel("tracked items", objectName="header"))
+        files_layout.addWidget(QLabel("tracked items", objectName="tracked_header"))
         self.file_search_box = QLineEdit(); self.file_search_box.setPlaceholderText("search tracked items..."); self.file_search_box.textChanged.connect(self.filter_files_tree)
         files_layout.addWidget(self.file_search_box)
         self.files_tree = QTreeWidget(); self.files_tree.setHeaderHidden(True); self.files_tree.itemClicked.connect(self.on_item_selected)
         files_layout.addWidget(self.files_tree)
 
-        versions_panel = QWidget(); versions_layout = QVBoxLayout(versions_panel); versions_layout.setContentsMargins(0,0,0,0)
-        versions_layout.addWidget(QLabel("version history", objectName="header"))
+        versions_panel = QWidget(); versions_layout = QVBoxLayout(versions_panel)
+        versions_header_layout = QHBoxLayout()
+        versions_header_layout.addWidget(QLabel("version history", objectName="header"))
+        versions_header_layout.addStretch()
+        self.take_snapshot_btn = QPushButton("take snapshot...")
+        self.take_snapshot_btn.clicked.connect(self.take_manual_snapshot)
+        self.take_snapshot_btn.setEnabled(False)
+        versions_header_layout.addWidget(self.take_snapshot_btn)
+        versions_layout.addLayout(versions_header_layout)
+
+
         self.version_search_box = QLineEdit(); self.version_search_box.setPlaceholderText("search versions..."); self.version_search_box.textChanged.connect(self.filter_versions_list)
         versions_layout.addWidget(self.version_search_box)
         self.versions_list = QTreeWidget(); self.versions_list.setHeaderHidden(True); self.versions_list.itemClicked.connect(self.on_version_selected)
@@ -367,7 +382,7 @@ class MainWindow(QMainWindow):
         versions_layout.addLayout(notes_panel)
 
         preview_panel = QWidget(); preview_layout = QVBoxLayout(preview_panel); preview_layout.setContentsMargins(0,0,0,0)
-        preview_layout.addWidget(QLabel("preview / diff", objectName="header"))
+        preview_layout.addWidget(QLabel("preview / diff", objectName="preview_header"))
         self.preview_box = QTextBrowser(); self.preview_box.setOpenExternalLinks(False)
         preview_layout.addWidget(self.preview_box)
 
@@ -415,6 +430,7 @@ class MainWindow(QMainWindow):
 
         self.export_action.setEnabled(is_file)
         self.remove_action.setEnabled(is_top_level)
+        self.take_snapshot_btn.setEnabled(is_file)
 
         if is_file:
             self.show_versions()
@@ -422,13 +438,13 @@ class MainWindow(QMainWindow):
             self.versions_list.clear()
             self.preview_box.clear()
             self.note_edit.clear()
-            self.restore_menu_btn.setEnabled(False)
+            self.snapshot_menu_btn.setEnabled(False)
             self.save_note_btn.setEnabled(False)
 
     def on_version_selected(self, item, column):
         self.show_preview(item)
         self.save_note_btn.setEnabled(True)
-        self.restore_menu_btn.setEnabled(True)
+        self.snapshot_menu_btn.setEnabled(True)
         self.load_note()
         
     def open_exclusions_editor(self):
@@ -498,7 +514,7 @@ class MainWindow(QMainWindow):
         self.update_files_tree()
         self.versions_list.clear(); self.preview_box.clear(); self.note_edit.clear()
         self.remove_action.setEnabled(False); self.export_action.setEnabled(False)
-        self.restore_menu_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
+        self.snapshot_menu_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
         self.update_monitoring()
 
     def update_files_tree(self):
@@ -661,7 +677,7 @@ class MainWindow(QMainWindow):
 
         self.versions_list.clear()
         self.preview_box.clear(); self.note_edit.clear()
-        self.restore_menu_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
+        self.snapshot_menu_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
         
         self.notes = load_notes(file_path)
         versions = list_snapshots(file_path)
@@ -713,7 +729,7 @@ class MainWindow(QMainWindow):
         if not current_item: return
         version_path = current_item.data(0, Qt.UserRole)
         orig_path = current_item.data(0, Qt.UserRole + 1)
-        reply = QMessageBox.question(self, "you sure vro?", "this will overwrite the current file. a snapshot will be saved first. continue?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        reply = QMessageBox.question(self, "restore and overwrite", "this will overwrite the current file. a snapshot will be saved first to be safe. continue?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
             latest_snap = get_latest_snapshot(orig_path)
             curr_hash = self.hash_file(orig_path)
@@ -735,7 +751,7 @@ class MainWindow(QMainWindow):
         base, ext = os.path.splitext(orig_path)
         suggested_name = f"{base}_restored_copy{ext}"
 
-        save_path, _ = QFileDialog.getSaveFileName(self, "save restored Copy As...", suggested_name)
+        save_path, _ = QFileDialog.getSaveFileName(self, "save restored copy as...", suggested_name)
 
         if save_path:
             try:
@@ -755,6 +771,22 @@ class MainWindow(QMainWindow):
             notes = load_notes(orig_path)
             if snap_name in notes: del notes[snap_name]; save_notes(orig_path, notes)
             self.show_versions()
+
+    def take_manual_snapshot(self):
+        current_item = self.files_tree.currentItem()
+        if not current_item:
+            return
+        
+        file_path = current_item.data(0, Qt.UserRole)
+        if not file_path or not os.path.isfile(file_path):
+            return
+
+        note, ok = QInputDialog.getText(self, "take snapshot", "enter a note for this snapshot (optional):")
+        if ok:
+            save_snapshot(file_path, note)
+            self.file_hashes[file_path] = self.hash_file(file_path)
+            self.show_versions()
+            QMessageBox.information(self, "snapshot created", "a new snapshot has been created successfully.")
 
     def save_note(self):
         curr = self.versions_list.currentItem()
