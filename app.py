@@ -294,12 +294,29 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         main = QWidget(); layout = QVBoxLayout(main); self.setCentralWidget(main)
         top = QHBoxLayout()
-        self.add_file_btn = QPushButton("+ add file"); self.add_file_btn.clicked.connect(self.add_file)
-        self.add_folder_btn = QPushButton("+ add folder"); self.add_folder_btn.clicked.connect(self.add_folder)
-        self.remove_btn = QPushButton("- remove"); self.remove_btn.clicked.connect(self.remove_item); self.remove_btn.setEnabled(False)
+        
+        self.actions_menu_btn = QPushButton("actions")
+        actions_menu = QMenu(self)
+        add_file_action = actions_menu.addAction("add file...")
+        add_file_action.triggered.connect(self.add_file)
+        add_folder_action = actions_menu.addAction("add folder...")
+        add_folder_action.triggered.connect(self.add_folder)
+        actions_menu.addSeparator()
+        self.remove_action = actions_menu.addAction("remove selected item")
+        self.remove_action.triggered.connect(self.remove_item)
+        self.remove_action.setEnabled(False)
+        self.actions_menu_btn.setMenu(actions_menu)
+        
+        self.manage_menu_btn = QPushButton("manage")
+        manage_menu = QMenu(self)
+        import_action = manage_menu.addAction("import snapshots...")
+        import_action.triggered.connect(self.import_snapshots)
+        self.export_action = manage_menu.addAction("export snapshots for selected file...")
+        self.export_action.triggered.connect(self.export_snapshots)
+        self.export_action.setEnabled(False)
+        self.manage_menu_btn.setMenu(manage_menu)
+
         self.exclusions_btn = QPushButton("edit exclusions"); self.exclusions_btn.clicked.connect(self.open_exclusions_editor)
-        self.import_btn = QPushButton("import snapshots"); self.import_btn.clicked.connect(self.import_snapshots)
-        self.export_btn = QPushButton("export snapshots"); self.export_btn.clicked.connect(self.export_snapshots); self.export_btn.setEnabled(False)
         
         self.pause_btn = QPushButton("pause tracking", self)
         self.pause_btn.setObjectName("pause_btn")
@@ -308,8 +325,9 @@ class MainWindow(QMainWindow):
 
         self.freq_combo = QComboBox(); self.freq_combo.addItems(["On Change", "Every 30 Seconds", "Every 1 Minute", "Every 5 Minutes"])
         self.freq_combo.currentTextChanged.connect(self.update_monitoring)
-        top.addWidget(self.add_file_btn); top.addWidget(self.add_folder_btn); top.addWidget(self.remove_btn)
-        top.addWidget(self.exclusions_btn); top.addWidget(self.import_btn); top.addWidget(self.export_btn); top.addStretch()
+
+        top.addWidget(self.actions_menu_btn)
+        top.addWidget(self.manage_menu_btn); top.addWidget(self.exclusions_btn); top.addStretch()
         top.addWidget(self.pause_btn); top.addWidget(QLabel("tracking frequency:")); top.addWidget(self.freq_combo)
 
         files_panel = QWidget(); files_layout = QVBoxLayout(files_panel); files_layout.setContentsMargins(0,0,0,0)
@@ -343,11 +361,18 @@ class MainWindow(QMainWindow):
 
         bottom = QHBoxLayout()
         self.delete_snap_btn = QPushButton("delete snapshot"); self.delete_snap_btn.setEnabled(False); self.delete_snap_btn.clicked.connect(self.delete_snapshot)
+        
+        self.restore_menu_btn = QPushButton("restore...")
+        restore_menu = QMenu(self)
+        restore_copy_action = restore_menu.addAction("restore as copy...")
+        restore_copy_action.triggered.connect(self.restore_as_copy)
+        restore_overwrite_action = restore_menu.addAction("restore and overwrite")
+        restore_overwrite_action.triggered.connect(self.restore_version)
+        self.restore_menu_btn.setMenu(restore_menu)
+        self.restore_menu_btn.setEnabled(False)
+
         bottom.addWidget(self.delete_snap_btn); bottom.addStretch()
-        self.restore_as_copy_btn = QPushButton("restore as copy"); self.restore_as_copy_btn.setEnabled(False); self.restore_as_copy_btn.clicked.connect(self.restore_as_copy)
-        bottom.addWidget(self.restore_as_copy_btn)
-        self.restore_btn = QPushButton("restore selected version"); self.restore_btn.setEnabled(False); self.restore_btn.clicked.connect(self.restore_version)
-        bottom.addWidget(self.restore_btn)
+        bottom.addWidget(self.restore_menu_btn)
 
         layout.addLayout(top); layout.addWidget(splitter); layout.addLayout(bottom)
 
@@ -387,8 +412,8 @@ class MainWindow(QMainWindow):
         is_file = path and os.path.isfile(path)
         is_top_level = item.parent() is None
 
-        self.export_btn.setEnabled(is_file)
-        self.remove_btn.setEnabled(is_top_level)
+        self.export_action.setEnabled(is_file)
+        self.remove_action.setEnabled(is_top_level)
 
         if is_file:
             self.show_versions()
@@ -396,8 +421,7 @@ class MainWindow(QMainWindow):
             self.versions_list.clear()
             self.preview_box.clear()
             self.note_edit.clear()
-            self.restore_btn.setEnabled(False)
-            self.restore_as_copy_btn.setEnabled(False)
+            self.restore_menu_btn.setEnabled(False)
             self.delete_snap_btn.setEnabled(False)
             self.save_note_btn.setEnabled(False)
 
@@ -405,8 +429,7 @@ class MainWindow(QMainWindow):
         self.show_preview(item)
         self.delete_snap_btn.setEnabled(True)
         self.save_note_btn.setEnabled(True)
-        self.restore_btn.setEnabled(True)
-        self.restore_as_copy_btn.setEnabled(True)
+        self.restore_menu_btn.setEnabled(True)
         self.load_note()
         
     def open_exclusions_editor(self):
@@ -475,9 +498,8 @@ class MainWindow(QMainWindow):
         
         self.update_files_tree()
         self.versions_list.clear(); self.preview_box.clear(); self.note_edit.clear()
-        self.remove_btn.setEnabled(False); self.export_btn.setEnabled(False)
-        self.restore_btn.setEnabled(False); self.restore_as_copy_btn.setEnabled(False)
-        self.delete_snap_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
+        self.remove_action.setEnabled(False); self.export_action.setEnabled(False)
+        self.restore_menu_btn.setEnabled(False); self.delete_snap_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
         self.update_monitoring()
 
     def update_files_tree(self):
@@ -544,8 +566,7 @@ class MainWindow(QMainWindow):
             self.update_monitoring()
             self.tray_icon.setToolTip("be kind, please rewind")
 
-        self.add_file_btn.setEnabled(not paused)
-        self.add_folder_btn.setEnabled(not paused)
+        self.actions_menu_btn.setEnabled(not paused)
         self.exclusions_btn.setEnabled(not paused)
         self.freq_combo.setEnabled(not paused)
         
@@ -641,7 +662,7 @@ class MainWindow(QMainWindow):
 
         self.versions_list.clear()
         self.preview_box.clear(); self.note_edit.clear()
-        self.restore_btn.setEnabled(False); self.restore_as_copy_btn.setEnabled(False); self.delete_snap_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
+        self.restore_menu_btn.setEnabled(False); self.delete_snap_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
         
         self.notes = load_notes(file_path)
         versions = list_snapshots(file_path)
@@ -861,14 +882,12 @@ class MainWindow(QMainWindow):
             self.save_settings()
             if hasattr(self, 'tray_icon'):
                 self.tray_icon.hide()
-            self.poll_timer.stop()
+            self.stop_monitoring()
             if self.watcher_thread:
-                self.watcher_thread.stop()
                 self.watcher_thread.wait()
             event.accept()
         else:
             event.ignore()
-            self.hide()
             if hasattr(self, 'tray_icon'):
                 self.tray_icon.showMessage(
                     "bkpr is still running",
@@ -876,6 +895,7 @@ class MainWindow(QMainWindow):
                     QSystemTrayIcon.Information,
                     1500
                 )
+            self.hide()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
