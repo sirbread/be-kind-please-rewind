@@ -295,10 +295,11 @@ class MainWindow(QMainWindow):
     def on_item_selected(self, item, column):
         path = item.data(0, Qt.UserRole)
         is_file = path and os.path.isfile(path)
-        
+        is_top_level = item.parent() is None
+
         self.export_btn.setEnabled(is_file)
-        self.remove_btn.setEnabled(True)
-        
+        self.remove_btn.setEnabled(is_top_level)
+
         if is_file:
             self.show_versions()
         else:
@@ -344,7 +345,9 @@ class MainWindow(QMainWindow):
 
     def remove_item(self):
         curr = self.files_tree.currentItem()
-        if not curr: return
+        if not curr or curr.parent() is not None:
+            return
+            
         path = curr.data(0, Qt.UserRole)
         reply = QMessageBox.question(self, "remove item", f"are you sure you want to stop tracking {os.path.basename(path)}?",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
@@ -360,7 +363,9 @@ class MainWindow(QMainWindow):
             if reply_del == QMessageBox.Yes:
                 for f in files_to_purge: shutil.rmtree(get_snapshot_dir(f), ignore_errors=True)
 
-        self.tracked_paths.remove(path)
+        if path in self.tracked_paths:
+            self.tracked_paths.remove(path)
+            
         for f in files_to_purge: self.file_hashes.pop(f, None)
         
         self.update_files_tree()
@@ -371,6 +376,10 @@ class MainWindow(QMainWindow):
         self.update_monitoring()
 
     def update_files_tree(self):
+        current_selection = None
+        if self.files_tree.currentItem():
+            current_selection = self.files_tree.currentItem().data(0, Qt.UserRole)
+            
         self.files_tree.clear()
         for path in sorted(self.tracked_paths):
             name = os.path.basename(path)
@@ -382,11 +391,16 @@ class MainWindow(QMainWindow):
                     child_item = QTreeWidgetItem(parent_item, [os.path.relpath(f, path)])
                     child_item.setData(0, Qt.UserRole, f)
                     child_item.setIcon(0, self.style().standardIcon(QStyle.SP_FileIcon))
+                    if f == current_selection:
+                        self.files_tree.setCurrentItem(child_item)
             else:
                 item = QTreeWidgetItem(self.files_tree, [name])
                 item.setData(0, Qt.UserRole, path)
                 item.setToolTip(0, path)
                 item.setIcon(0, self.style().standardIcon(QStyle.SP_FileIcon))
+                if path == current_selection:
+                    self.files_tree.setCurrentItem(item)
+
         self.filter_files_tree(self.file_search_box.text())
 
     def filter_files_tree(self, text):
@@ -526,7 +540,7 @@ class MainWindow(QMainWindow):
         if not current_item: return
         version_path = current_item.data(0, Qt.UserRole)
         orig_path = current_item.data(0, Qt.UserRole + 1)
-        reply = QMessageBox.question(self, "you sure vro?", "this will overwrite the current file. a snapshot will be saved first if needed. continue?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        reply = QMessageBox.question(self, "you sure vro?", "this will overwrite the current file. a snapshot will be saved first. continue?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
             latest_snap = get_latest_snapshot(orig_path)
             curr_hash = self.hash_file(orig_path)
@@ -561,7 +575,7 @@ class MainWindow(QMainWindow):
         curr = self.versions_list.currentItem()
         if not curr: return
         version_path = curr.data(0, Qt.UserRole); snap_name = curr.data(0, Qt.UserRole + 2); orig_path = curr.data(0, Qt.UserRole+1)
-        reply = QMessageBox.question(self, "delete snapshot", f"are you sure you want to delete this snapshot?\n{snap_name}",
+        reply = QMessageBox.question(self, "delete snapshot", f"are you sure you want to permanently delete this snapshot?\n{snap_name}",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
             os.remove(version_path)
