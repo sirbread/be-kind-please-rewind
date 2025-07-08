@@ -316,6 +316,18 @@ class MainWindow(QMainWindow):
         self.export_action.setEnabled(False)
         self.manage_menu_btn.setMenu(manage_menu)
 
+        self.restore_menu_btn = QPushButton("snapshots")
+        restore_menu = QMenu(self)
+        restore_copy_action = restore_menu.addAction("restore as copy...")
+        restore_copy_action.triggered.connect(self.restore_as_copy)
+        restore_overwrite_action = restore_menu.addAction("restore and overwrite")
+        restore_overwrite_action.triggered.connect(self.restore_version)
+        restore_menu.addSeparator()
+        self.delete_action = restore_menu.addAction("delete snapshot")
+        self.delete_action.triggered.connect(self.delete_snapshot)
+        self.restore_menu_btn.setMenu(restore_menu)
+        self.restore_menu_btn.setEnabled(False)
+
         self.exclusions_btn = QPushButton("edit exclusions"); self.exclusions_btn.clicked.connect(self.open_exclusions_editor)
         
         self.pause_btn = QPushButton("pause tracking", self)
@@ -323,12 +335,16 @@ class MainWindow(QMainWindow):
         self.pause_btn.setCheckable(True)
         self.pause_btn.toggled.connect(self.toggle_pause_tracking)
 
-        self.freq_combo = QComboBox(); self.freq_combo.addItems(["On Change", "Every 30 Seconds", "Every 1 Minute", "Every 5 Minutes"])
+        self.freq_combo = QComboBox(); self.freq_combo.addItems(["on change", "every 30 seconds", "every 1 minute", "every 5 minutes"])
         self.freq_combo.currentTextChanged.connect(self.update_monitoring)
 
         top.addWidget(self.actions_menu_btn)
-        top.addWidget(self.manage_menu_btn); top.addWidget(self.exclusions_btn); top.addStretch()
-        top.addWidget(self.pause_btn); top.addWidget(QLabel("tracking frequency:")); top.addWidget(self.freq_combo)
+        top.addWidget(self.manage_menu_btn)
+        top.addWidget(self.restore_menu_btn)
+        top.addWidget(self.exclusions_btn); top.addStretch()
+        top.addWidget(QLabel("tracking frequency:"))
+        top.addWidget(self.freq_combo)
+        top.addWidget(self.pause_btn)
 
         files_panel = QWidget(); files_layout = QVBoxLayout(files_panel); files_layout.setContentsMargins(0,0,0,0)
         files_layout.addWidget(QLabel("tracked items", objectName="header"))
@@ -359,22 +375,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(files_panel); splitter.addWidget(versions_panel); splitter.addWidget(preview_panel)
         splitter.setSizes([250, 350, 800])
 
-        bottom = QHBoxLayout()
-        self.delete_snap_btn = QPushButton("delete snapshot"); self.delete_snap_btn.setEnabled(False); self.delete_snap_btn.clicked.connect(self.delete_snapshot)
-        
-        self.restore_menu_btn = QPushButton("restore...")
-        restore_menu = QMenu(self)
-        restore_copy_action = restore_menu.addAction("restore as copy...")
-        restore_copy_action.triggered.connect(self.restore_as_copy)
-        restore_overwrite_action = restore_menu.addAction("restore and overwrite")
-        restore_overwrite_action.triggered.connect(self.restore_version)
-        self.restore_menu_btn.setMenu(restore_menu)
-        self.restore_menu_btn.setEnabled(False)
-
-        bottom.addWidget(self.delete_snap_btn); bottom.addStretch()
-        bottom.addWidget(self.restore_menu_btn)
-
-        layout.addLayout(top); layout.addWidget(splitter); layout.addLayout(bottom)
+        layout.addLayout(top); layout.addWidget(splitter)
 
     def init_tray_icon(self):
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -384,10 +385,10 @@ class MainWindow(QMainWindow):
         self.tray_icon.setToolTip("be kind, please rewind")
         
         tray_menu = QMenu(self)
-        show_action = tray_menu.addAction("Show")
+        show_action = tray_menu.addAction("show")
         show_action.triggered.connect(self.show_window)
         
-        quit_action = tray_menu.addAction("Exit")
+        quit_action = tray_menu.addAction("exit")
         quit_action.triggered.connect(self.quit_application)
         
         self.tray_icon.setContextMenu(tray_menu)
@@ -422,12 +423,10 @@ class MainWindow(QMainWindow):
             self.preview_box.clear()
             self.note_edit.clear()
             self.restore_menu_btn.setEnabled(False)
-            self.delete_snap_btn.setEnabled(False)
             self.save_note_btn.setEnabled(False)
 
     def on_version_selected(self, item, column):
         self.show_preview(item)
-        self.delete_snap_btn.setEnabled(True)
         self.save_note_btn.setEnabled(True)
         self.restore_menu_btn.setEnabled(True)
         self.load_note()
@@ -499,7 +498,7 @@ class MainWindow(QMainWindow):
         self.update_files_tree()
         self.versions_list.clear(); self.preview_box.clear(); self.note_edit.clear()
         self.remove_action.setEnabled(False); self.export_action.setEnabled(False)
-        self.restore_menu_btn.setEnabled(False); self.delete_snap_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
+        self.restore_menu_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
         self.update_monitoring()
 
     def update_files_tree(self):
@@ -586,13 +585,13 @@ class MainWindow(QMainWindow):
 
 
         freq = self.freq_combo.currentText()
-        if freq == "On Change":
+        if freq == "on change":
             self.watcher_thread = WatcherThread(self.tracked_paths)
             self.watcher_thread.file_changed.connect(self.on_file_event)
             self.watcher_thread.start()
         else:
-            intervals = {"Every 30 Seconds": 30000, "Every 1 Minute": 60000, "Every 5 Minutes": 300000}
-            self.poll_timer.start(intervals[freq])
+            intervals = {"every 30 seconds": 30000, "every 1 minute": 60000, "every 5 minutes": 300000}
+            self.poll_timer.start(intervals[freq.lower()])
 
     def poll_files(self):
         if self.is_paused: return
@@ -662,7 +661,7 @@ class MainWindow(QMainWindow):
 
         self.versions_list.clear()
         self.preview_box.clear(); self.note_edit.clear()
-        self.restore_menu_btn.setEnabled(False); self.delete_snap_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
+        self.restore_menu_btn.setEnabled(False); self.save_note_btn.setEnabled(False)
         
         self.notes = load_notes(file_path)
         versions = list_snapshots(file_path)
