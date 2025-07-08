@@ -239,7 +239,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("be kind, please rewind")
         self.setGeometry(100, 100, 1400, 900)
-        self.setWindowIcon(self.style().standardIcon(QStyle.SP_DriveDVDIcon))
+        self.setWindowIcon(QIcon('bkpr.ico'))
         self.tracked_paths = [] 
         self.file_hashes = {} 
         self.watcher_thread = None
@@ -307,7 +307,7 @@ class MainWindow(QMainWindow):
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
         self.tray_icon = QSystemTrayIcon(self)
-        self.tray_icon.setIcon(self.windowIcon())
+        self.tray_icon.setIcon(QIcon('bkpr.ico'))
         self.tray_icon.setToolTip("be kind, please rewind")
         
         tray_menu = QMenu(self)
